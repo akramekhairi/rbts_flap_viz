@@ -107,7 +107,7 @@ git clone https://gitlab.com/inivation/dv/dv-ros.git
 
 ```bash
 cd ~/catkin_ws/src
-git clone https://github.com/<your-username>/rbts_flap_viz.git
+git clone https://github.com/akramekhairi/rbts_flap_viz.git
 ```
 
 ### 6. Build the workspace
