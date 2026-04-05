@@ -1,0 +1,28 @@
+# Build
+build/
+devel/
+install/
+logs/
+
+# Catkin
+.catkin_workspace
+.catkin_tools/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ROS bags (user data, not part of the repo)
+*.bag

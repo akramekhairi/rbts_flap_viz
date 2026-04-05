@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="wing_flap">
+  <link
+    name="flap_base_link">
+    <inertial>
+      <origin
+        xyz="0.0022266 0.0053793 -0.023244"
+        rpy="0 0 0" />
+      <mass
+        value="113.47" />
+      <inertia
+        ixx="10.603"
+        ixy="-0.14608"
+        ixz="0.0029704"
+        iyy="54.671"
+        iyz="0.0071761"
+        izz="65.235" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="1.57079632679 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wing_flap/meshes/base_link.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="1.57079632679 0 0" />
+      <geometry>
+        <mesh
+          filename="package://wing_flap/meshes/base_link.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+</robot>

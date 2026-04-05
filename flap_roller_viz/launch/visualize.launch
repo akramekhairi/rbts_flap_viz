@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Flap tuned static position relative to map -->
+  <arg name="flap_x" default="0.0"/>
+  <arg name="flap_y" default="0.0"/>
+  <arg name="flap_z" default="0.0"/>
+  <arg name="flap_roll" default="0.0"/>
+  <arg name="flap_pitch" default="0.0"/>
+  <arg name="flap_yaw" default="0.0"/>
+
+  <!-- Bag file path -->
+  <arg name="bag" default="$(find flap_roller_viz)/../flap_circles_fully_reconstructed.bag"/>
+
+  <!-- Load flap URDF -->
+  <param name="flap_description" textfile="$(find wing_flap)/urdf/wing_flap.urdf"/>
+  <node name="flap_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="robot_description" to="flap_description"/>
+    <remap from="joint_states" to="flap/joint_states"/>
+  </node>
+
+  <node name="flap_static_tf" pkg="tf2_ros" type="static_transform_publisher" 
+        args="$(arg flap_x) $(arg flap_y) $(arg flap_z) $(arg flap_yaw) $(arg flap_pitch) $(arg flap_roll) map flap_base_link"/>
+
+  <!-- Load roller URDF -->
+  <param name="roller_description" textfile="$(find roller_handheld)/urdf/roller_handheld.urdf"/>
+  <node name="roller_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="robot_description" to="roller_description"/>
+  </node>
+
+  <!-- Roller Controller: velocity-driven from bag /tcp/vel -->
+  <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
+        launch-prefix="/usr/bin/python3">
+    <param name="roller_radius" value="0.05" />
+    <param name="support_radius" value="0.02" />
+    <param name="start_x" value="0.15952" />
+    <param name="start_y" value="-0.11" />
+    <param name="start_z" value="0.85" />
+  </node>
+
+  <!-- Motion Compensator (delayed 5s to let RViz and TF settle) -->
+  <node pkg="dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
+        launch-prefix="bash -c 'sleep 5; exec $0 $@'">
+    <remap from="/motion_compensator/events" to="/capture_node/events" />
+    <param name="accumulation_time_ms" value="20" />
+    <param name="contribution" value="0.4" />
+    <param name="constant_depth" value="0.047" />
+  </node>
+
+  <!-- Hole Detector GUI (delayed 6s, uses system python for rospy compatibility) -->
+  <node name="hole_detector_gui" pkg="dv_ros_accumulation" type="hole_detector_gui.py" output="screen"
+        launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'"/>
+
+  <!-- Bag playback (delayed 7s, starts at 15s into the bag) -->
+
+
+  <!-- RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find flap_roller_viz)/launch/config.rviz" />
+</launch>

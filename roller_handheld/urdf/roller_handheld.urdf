@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="roller_handheld">
+  <link
+    name="roller_base_link">
+    <inertial>
+      <origin
+        xyz="-0.062649 -0.0001411 0.040838"
+        rpy="0 0 0" />
+      <mass
+        value="0.4744" />
+      <inertia
+        ixx="0.00063273"
+        ixy="-6.9634E-06"
+        ixz="-3.566E-05"
+        iyy="0.00049112"
+        iyz="-6.1205E-06"
+        izz="0.00067819" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="black">
+        <color
+          rgba="0 0 0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="link_roller">
+    <inertial>
+      <origin
+        xyz="0 -1.4706E-05 -1.0669E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.79363" />
+      <inertia
+        ixx="0.0015784"
+        ixy="-1.3203E-19"
+        ixz="9.0573E-24"
+        iyy="0.00078405"
+        iyz="-4.8625E-09"
+        izz="0.0015784" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_roller.STL" />
+      </geometry>
+      <material
+        name="black">
+        <color
+          rgba="0 0 0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_roller.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_roller"
+    type="continuous">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="roller_base_link" />
+    <child
+      link="link_roller" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="link_elastomer">
+    <inertial>
+      <origin
+        xyz="-4.4409E-16 0 1.1102E-16"
+        rpy="0 0 0" />
+      <mass
+        value="0.068612" />
+      <inertia
+        ixx="0.00010769"
+        ixy="-3.2886E-21"
+        ixz="-1.567E-20"
+        iyy="0.0001422"
+        iyz="1.1908E-20"
+        izz="0.00010769" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_elastomer.STL" />
+      </geometry>
+      <material
+        name="grey">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_elastomer.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_elastomer"
+    type="continuous">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="link_roller" />
+    <child
+      link="link_elastomer" />
+    <axis
+      xyz="0 1 0" />
+    <mimic
+      joint="joint_roller"
+      multiplier="1"
+      offset="0" />
+  </joint>
+  <link
+    name="link_support">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_support.STL" />
+      </geometry>
+      <material
+        name="black">
+        <color
+          rgba="0 0 0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://roller_handheld/meshes/link_support.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_support"
+    type="continuous">
+    <origin
+      xyz="-0.15952 -0.003 -0.021773"
+      rpy="0 0 0" />
+    <parent
+      link="roller_base_link" />
+    <child
+      link="link_support" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+</robot>
