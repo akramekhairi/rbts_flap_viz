@@ -76,10 +76,10 @@ private:
             std::vector<float> dist_coeffs = {-0.5212024031184511, -1.6230690455084205, -0.020112208777664516, -0.003298750362896862, 12.835326218458155};
             
             camera_ = std::make_shared<dv::camera::CameraGeometry>(
-                dist_coeffs, fx, fy, cx, cy, resolution, dv::camera::DistortionModel::RadTan
+                dist_coeffs, fx, fy, cx, cy, resolution, dv::camera::DistortionModel::RADIAL_TANGENTIAL
             );
 
-            auto edge_accum = std::make_unique<dv::EdgeMapAccumulator>(resolution, contribution_, true); // ignorePolarity=true
+            auto edge_accum = std::make_unique<dv::EdgeMapAccumulator>(resolution, contribution_, 0.5f, true);
             
             mc_compensate_ = std::make_unique<dv::kinematics::MotionCompensator<>>(camera_, std::move(edge_accum));
             mc_compensate_->setConstantDepth(constant_depth_);
@@ -123,7 +123,7 @@ private:
             
             // Re-initialize accumulator and compensator to clear old state if looping
             cv::Size resolution(640, 480);
-            auto edge_accum = std::make_unique<dv::EdgeMapAccumulator>(resolution, contribution_, true);
+            auto edge_accum = std::make_unique<dv::EdgeMapAccumulator>(resolution, contribution_, 0.5f, true);
             mc_compensate_ = std::make_unique<dv::kinematics::MotionCompensator<>>(camera_, std::move(edge_accum));
             mc_compensate_->setConstantDepth(constant_depth_);
             

@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
 		accumulator->setMinPotential(static_cast<float>(config.min_potential));
 		accumulator->setNeutralPotential(static_cast<float>(config.neutral_potential));
 		accumulator->setDecayParam(static_cast<float>(config.decay_param));
-		accumulator->setRectifyPolarity(config.rectify_polarity);
+		accumulator->setIgnorePolarity(config.rectify_polarity);
 		accumulator->setSynchronousDecay(config.synchronous_decay);
 		accumulator->setDecayFunction(static_cast<dv::Accumulator::Decay>(config.decay_function));
 
@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
 				break;
 			}
 			case rbts_dv_ros_accumulation::Accumulator_NUMBER: {
-				jobId = slicer.doEveryNumberOfEvents(config.accumulation_number, slicerCallback);
+				jobId = slicer.doEveryNumberOfElements(config.accumulation_number, slicerCallback);
 				break;
 			}
 			default:
