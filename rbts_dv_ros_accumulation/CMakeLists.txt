@@ -14,7 +14,7 @@ find_package(
 
 generate_dynamic_reconfigure_options(cfg/Accumulator.cfg cfg/EdgeMap.cfg)
 
-find_package(dv-processing 1.4.0 REQUIRED)
+find_package(dv-processing 2.0.3 REQUIRED)
 
 catkin_package(
   CATKIN_DEPENDS
