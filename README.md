@@ -43,7 +43,7 @@ Data flow:
 
 - **OS**: Ubuntu 20.04
 - **ROS**: ROS Noetic ([installation guide](http://wiki.ros.org/noetic/Installation/Ubuntu))
-- **dv-processing** library (≥ 1.4.0) from iniVation
+- **dv-processing** library (≥ 2.0.0) from iniVation (Note: requires GCC ≥ 13)
 - **Python 3** with PyQt5 and OpenCV
 
 ---
@@ -94,14 +94,16 @@ cd ~/catkin_ws/src
 
 ### 4. Clone the upstream dv-ros packages (required dependencies)
 
-The motion compensator depends on `dv_ros_msgs`, `dv_ros_messaging`, and `dv_ros_capture` from the upstream dv-ros repository:
+The motion compensator depends on `dv_ros_msgs` and `dv_ros_messaging` from the upstream dv-ros repository:
 
 ```bash
 cd ~/catkin_ws/src
 git clone https://gitlab.com/inivation/dv/dv-ros.git
-```
 
-> **Note**: This clones the full dv-ros repo. The build system will only build the packages that are needed.
+# Ignore modules that require additional dependencies (like dv-runtime) or conflict with our package:
+cd dv-ros
+touch dv_ros_aedat4/CATKIN_IGNORE dv_ros_capture/CATKIN_IGNORE dv_ros_imu_bias/CATKIN_IGNORE dv_ros_tracker/CATKIN_IGNORE dv_ros_visualization/CATKIN_IGNORE dv_ros_runtime_modules/CATKIN_IGNORE dv_ros_accumulation/CATKIN_IGNORE
+```
 
 ### 5. Clone this repository
 
@@ -112,12 +114,23 @@ git clone https://github.com/akramekhairi/rbts_flap_viz.git
 
 ### 6. Build the workspace
 
+Because `dv-processing` 2.x utilizes C++20 features, we must compile the workspace with GCC 13.
+
 ```bash
+# Install GCC 13 (if you are on Ubuntu 20.04 where GCC 10 is default)
+sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+sudo apt update
+sudo apt install gcc-13 g++-13 -y
+
 cd ~/catkin_ws
 source /opt/ros/noetic/setup.bash
+
+# Ensure the build uses the newer compiler without changing system defaults
+export CC=gcc-13 CXX=g++-13
+
 catkin_make
-# or if you prefer catkin tools:
-# catkin build
+# Troubleshooting Note: If you use Anaconda, its cmake files might interfere with pkg-config.
+# Fix this by appending: -DCMAKE_IGNORE_PATH=$HOME/anaconda3/lib/cmake
 ```
 
 ### 7. Source the workspace
