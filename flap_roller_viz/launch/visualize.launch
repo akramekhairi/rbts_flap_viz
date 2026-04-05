@@ -38,7 +38,7 @@
   </node>
 
   <!-- Motion Compensator (delayed 5s to let RViz and TF settle) -->
-  <node pkg="dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
+  <node pkg="rbts_dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
         launch-prefix="bash -c 'sleep 5; exec $0 $@'">
     <remap from="/motion_compensator/events" to="/capture_node/events" />
     <param name="accumulation_time_ms" value="20" />
@@ -47,7 +47,7 @@
   </node>
 
   <!-- Hole Detector GUI (delayed 6s, uses system python for rospy compatibility) -->
-  <node name="hole_detector_gui" pkg="dv_ros_accumulation" type="hole_detector_gui.py" output="screen"
+  <node name="hole_detector_gui" pkg="rbts_dv_ros_accumulation" type="hole_detector_gui.py" output="screen"
         launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'"/>
 
   <!-- Bag playback (delayed 7s, starts at 15s into the bag) -->

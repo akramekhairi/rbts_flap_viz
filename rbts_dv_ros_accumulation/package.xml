@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>dv_ros_accumulation</name>
+  <name>rbts_dv_ros_accumulation</name>
   <version>1.3.0</version>
   <description>Nodes for accumulating events into frames using dv::processing library.</description>
 

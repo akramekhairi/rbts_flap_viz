@@ -2,7 +2,7 @@
 
 #include <dv_ros_messaging/messaging.hpp>
 
-#include <dv_ros_accumulation/EdgeMapConfig.h>
+#include <rbts_dv_ros_accumulation/EdgeMapConfig.h>
 
 #include <ros/ros.h>
 
@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
 	dv::EventStreamSlicer slicer;
 	std::unique_ptr<dv::PixelAccumulator> accumulator = nullptr;
 
-	dynamic_reconfigure::Server<dv_ros_accumulation::EdgeMapConfig> server;
+	dynamic_reconfigure::Server<rbts_dv_ros_accumulation::EdgeMapConfig> server;
 	auto framePublisher = nh.advertise<dv_ros_msgs::ImageMessage>("image", 10);
 
 	const auto slicerCallback = [&framePublisher, &accumulator](const dv::EventStore &events) {
@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
 
 	std::optional<int> jobId;
 	const auto reconfigureCallback = [&accumulator, &slicer, &jobId, &slicerCallback](
-										 const dv_ros_accumulation::EdgeMapConfig &config, uint32_t level) {
+										 const rbts_dv_ros_accumulation::EdgeMapConfig &config, uint32_t level) {
 		if (jobId.has_value()) {
 			slicer.removeJob(*jobId);
 		}
@@ -50,11 +50,11 @@ int main(int argc, char **argv) {
 		accumulator->setNeutralValue(static_cast<float>(config.neutral_potential));
 
 		switch (config.slice_method) {
-			case dv_ros_accumulation::EdgeMap_TIME: {
+			case rbts_dv_ros_accumulation::EdgeMap_TIME: {
 				jobId = slicer.doEveryTimeInterval(dv::Duration(config.accumulation_time * 1000LL), slicerCallback);
 				break;
 			}
-			case dv_ros_accumulation::EdgeMap_NUMBER: {
+			case rbts_dv_ros_accumulation::EdgeMap_NUMBER: {
 				jobId = slicer.doEveryNumberOfEvents(config.accumulation_number, slicerCallback);
 				break;
 			}

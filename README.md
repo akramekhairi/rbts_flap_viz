@@ -186,7 +186,7 @@ URDF description package for the wing flap model (exported from SolidWorks). Con
 ### `roller_handheld`
 URDF description package for the handheld roller assembly (roller, elastomer, support wheels). Contains meshes (STL) and URDF with revolute joints.
 
-### `dv_ros_accumulation`
+### `rbts_dv_ros_accumulation`
 Event processing nodes from the [dv-ros](https://gitlab.com/inivation/dv/dv-ros) project, extended with:
 - `motion_compensator` (C++) — motion-compensates events using velocity data and the `dv-processing` library
 - `hole_detector_gui.py` — PyQt5 GUI for real-time hole detection, tracking, and RViz marker publishing
@@ -205,6 +205,6 @@ Event processing nodes from the [dv-ros](https://gitlab.com/inivation/dv/dv-ros)
 
 ## License
 
-- `dv_ros_accumulation`: Apache 2.0 (iniVation)
+- `rbts_dv_ros_accumulation`: Apache 2.0 (iniVation)
 - `wing_flap`, `roller_handheld`: BSD
 - `flap_roller_viz`: MIT

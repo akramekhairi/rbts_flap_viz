@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(dv_ros_accumulation VERSION 1.2.0)
+project(rbts_dv_ros_accumulation VERSION 1.2.0)
 
 find_package(
   catkin REQUIRED
