@@ -50,94 +50,23 @@ Data flow:
 
 ## Installation
 
-### 1. Install system dependencies
+We provide an automated setup script that installs all required dependencies (ROS, dv-processing 2.x, GCC 13), clones the upstream `dv-ros` dependency, configures it to ignore unused modules, and builds the workspace safely without Anaconda interference.
 
 ```bash
-# ROS Noetic (if not already installed)
-sudo apt update
-sudo apt install ros-noetic-desktop-full
-
-# Python dependencies
-sudo apt install python3-pyqt5 python3-opencv python3-pip
-
-# ROS packages used by the pipeline
-sudo apt install ros-noetic-robot-state-publisher \
-                 ros-noetic-tf2-ros \
-                 ros-noetic-rviz \
-                 ros-noetic-cv-bridge \
-                 ros-noetic-image-transport \
-                 ros-noetic-dynamic-reconfigure \
-                 ros-noetic-visualization-msgs
-```
-
-### 2. Install dv-processing library
-
-Follow the official iniVation instructions to install `dv-processing` ≥ 1.4.0:
-
-```bash
-# Add iniVation PPA
-sudo add-apt-repository ppa:inivation-ppa/inivation
-sudo apt update
-
-# Install the library
-sudo apt install dv-processing
-```
-
-> **Note**: If the PPA is not available for your system, see the [dv-processing documentation](https://dv-processing.inivation.com/) for alternative installation methods.
-
-### 3. Create a catkin workspace (or use an existing one)
-
-```bash
-mkdir -p ~/catkin_ws/src
-cd ~/catkin_ws/src
-```
-
-### 4. Clone the upstream dv-ros packages (required dependencies)
-
-The motion compensator depends on `dv_ros_msgs` and `dv_ros_messaging` from the upstream dv-ros repository:
-
-```bash
-cd ~/catkin_ws/src
-git clone https://gitlab.com/inivation/dv/dv-ros.git
-
-# Ignore modules that require additional dependencies (like dv-runtime) or conflict with our package:
-cd dv-ros
-touch dv_ros_aedat4/CATKIN_IGNORE dv_ros_capture/CATKIN_IGNORE dv_ros_imu_bias/CATKIN_IGNORE dv_ros_tracker/CATKIN_IGNORE dv_ros_visualization/CATKIN_IGNORE dv_ros_runtime_modules/CATKIN_IGNORE dv_ros_accumulation/CATKIN_IGNORE
-```
-
-### 5. Clone this repository
-
-```bash
-cd ~/catkin_ws/src
+# 1. Clone this repository into an empty directory
+mkdir -p ~/handheld_rbts_ws/src
+cd ~/handheld_rbts_ws/src
 git clone https://github.com/akramekhairi/rbts_flap_viz.git
+
+# 2. Run the automated installer
+cd rbts_flap_viz
+./setup_workspace.sh
+
+# 3. Source the freshly built workspace
+source ~/handheld_rbts_ws/devel/setup.bash
 ```
 
-### 6. Build the workspace
-
-Because `dv-processing` 2.x utilizes C++20 features, we must compile the workspace with GCC 13.
-
-```bash
-# Install GCC 13 (if you are on Ubuntu 20.04 where GCC 10 is default)
-sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
-sudo apt update
-sudo apt install gcc-13 g++-13 -y
-
-cd ~/catkin_ws
-source /opt/ros/noetic/setup.bash
-
-# Ensure the build uses the newer compiler without changing system defaults
-export CC=gcc-13 CXX=g++-13
-
-catkin_make
-# Troubleshooting Note: If you use Anaconda, its cmake files might interfere with pkg-config.
-# Fix this by appending: -DCMAKE_IGNORE_PATH=$HOME/anaconda3/lib/cmake
-```
-
-### 7. Source the workspace
-
-```bash
-source ~/catkin_ws/devel/setup.bash
-```
+*(You can also optionally add `source ~/handheld_rbts_ws/devel/setup.bash` to your `~/.bashrc`)*
 
 Add this to your `~/.bashrc` for convenience:
 ```bash
