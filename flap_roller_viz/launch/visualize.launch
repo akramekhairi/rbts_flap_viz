@@ -37,20 +37,22 @@
   </node>
 
   <!-- Roller Controller: encoder-driven via /roller/position -->
+  <!-- start_x = right_edge_x - 1.10 m  (roller starts 110 cm from right edge, travels right-to-left) -->
+  <!-- Tune start_x by measuring the flap's right-edge X in RViz -->
   <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
         launch-prefix="/usr/bin/python3">
     <param name="roller_radius" value="0.05" />
     <param name="support_radius" value="0.02" />
-    <param name="start_x" value="0.15952" />
+    <param name="start_x" value="1.29" />
     <param name="start_y" value="-0.11" />
-    <param name="start_z" value="0.85" />
+    <param name="start_z" value="0.26" />
   </node>
 
   <!-- Motion Compensator (delayed 5s to let RViz and TF settle) -->
   <node pkg="rbts_dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
         launch-prefix="bash -c 'sleep 5; exec $0 $@'">
     <remap from="/motion_compensator/events" to="/capture_node/events" />
-    <param name="accumulation_time_ms" value="20" />
+    <param name="accumulation_time_ms" value="10" />
     <param name="contribution" value="0.4" />
     <param name="constant_depth" value="0.047" />
   </node>

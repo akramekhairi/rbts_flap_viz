@@ -37,11 +37,10 @@ class ROSThread(QThread):
         
         self.holes = [] # list of dicts
         
-        # RViz marker parameters
-        self.roller_start_x = 0.15952  # meters, roller starting X position on flap
+        # RViz marker parameters  — must match roller_controller start_x and start_z
+        self.roller_start_x = 1.29     # meters
         self.surface_y = -0.045        # meters, hole markers on flap surface
-        self.front_y = -0.35           # meters, front markers visible past the roller
-        self.roller_z = 0.85           # meters, roller Z (surface height)
+        self.roller_start_z = 0.26     # meters, roller Z (surface height)
         self.marker_pub = None  # initialized after rospy.init_node
         self.latest_hole_id = -1
         self.hole_counter = 0
@@ -50,7 +49,6 @@ class ROSThread(QThread):
     def run(self):
         rospy.init_node('hole_detector_gui', anonymous=True, disable_signals=True)
         self.marker_pub = rospy.Publisher('/hole_markers', MarkerArray, queue_size=10, latch=True)
-        self.front_marker_pub = rospy.Publisher('/hole_markers_front', MarkerArray, queue_size=10, latch=True)
         rospy.Subscriber('/roller/position', Float64, self.pos_callback)
         rospy.Subscriber('/motion_compensator/image', Image, self.image_callback)
         rospy.Service('~reset', Empty, self.reset_callback)
@@ -84,7 +82,7 @@ class ROSThread(QThread):
         rospy.loginfo("Environment fully reset.")
 
     def toggle_markers(self):
-        """Toggle the visibility of front markers and roller."""
+        """Toggle the visibility of roller."""
         self.markers_visible = not self.markers_visible
         try:
             # Call the roller controller service
@@ -148,7 +146,7 @@ class ROSThread(QThread):
             blurred_img,
             cv2.HOUGH_GRADIENT,
             dp=2,
-            minDist=1000, 
+            minDist=480, 
             param1=100,
             param2=20,
             minRadius=106,
@@ -223,9 +221,9 @@ class ROSThread(QThread):
         m.id = marker_id
         m.type = Marker.CYLINDER
         m.action = Marker.ADD
-        m.pose.position.x = self.roller_start_x + hole['abs_x'] / 1000.0
+        m.pose.position.x = self.roller_start_x
         m.pose.position.y = y_pos
-        m.pose.position.z = self.roller_z
+        m.pose.position.z = self.roller_start_z + hole['abs_x'] / 1000.0
         # Rotate 90 deg around X so cylinder faces the flap surface
         m.pose.orientation.x = 0.7071068
         m.pose.orientation.w = 0.7071068
@@ -242,16 +240,13 @@ class ROSThread(QThread):
             return
         
         marker_array = MarkerArray()
-        front_marker_array = MarkerArray()
         
         m = Marker()
         m.action = 3 # Marker.DELETEALL is 3
         
         marker_array.markers.append(m)
-        front_marker_array.markers.append(m)
         
         self.marker_pub.publish(marker_array)
-        self.front_marker_pub.publish(front_marker_array)
 
     def _publish_markers(self):
         """Publish RViz MarkerArray with markers for each detected hole."""
@@ -259,7 +254,6 @@ class ROSThread(QThread):
             return
 
         marker_array = MarkerArray()
-        front_marker_array = MarkerArray()
 
         for hole in self.holes:
             is_latest = (hole['id'] == self.latest_hole_id)
@@ -276,31 +270,7 @@ class ROSThread(QThread):
             m_surface = self._make_hole_marker(hole, 'holes_surface', hole['id'], self.surface_y, color, thickness)
             marker_array.markers.append(m_surface)
 
-            # Front marker (in front of roller, y=-0.35) — visible while roller is present
-            front_color = ColorRGBA(color.r, color.g, color.b, 0.7)  # slightly transparent
-            m_front = self._make_hole_marker(hole, 'holes_front', hole['id'], self.front_y, front_color, thickness)
-            front_marker_array.markers.append(m_front)
-
-            # Text label above the front marker
-            tm = Marker()
-            tm.header.frame_id = 'map'
-            tm.header.stamp = rospy.Time.now()
-            tm.ns = 'hole_labels'
-            tm.id = hole['id']
-            tm.type = Marker.TEXT_VIEW_FACING
-            tm.action = Marker.ADD
-            tm.pose.position.x = m_front.pose.position.x
-            tm.pose.position.y = self.front_y
-            tm.pose.position.z = self.roller_z + 0.015
-            tm.pose.orientation.w = 1.0
-            tm.scale.z = 0.008  # text height
-            tm.color = ColorRGBA(1.0, 1.0, 1.0, 1.0)
-            tm.text = f"#{hole['id']}"
-            tm.lifetime = rospy.Duration(0)
-            front_marker_array.markers.append(tm)
-
         self.marker_pub.publish(marker_array)
-        self.front_marker_pub.publish(front_marker_array)
 
 class HoleGUI(QWidget):
     def __init__(self):
@@ -336,7 +306,7 @@ class HoleGUI(QWidget):
         # Buttons layout
         btn_layout = QHBoxLayout()
         
-        self.toggle_btn = QPushButton("Toggle Roller/Markers")
+        self.toggle_btn = QPushButton("Toggle Roller")
         self.toggle_btn.clicked.connect(self.ros_thread.toggle_markers)
         
         self.reset_btn = QPushButton("Reset Env / Roller")

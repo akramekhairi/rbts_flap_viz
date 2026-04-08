@@ -5,7 +5,7 @@ Roller Controller Node (encoder-driven, direct position)
 - Publishes TF (map -> roller_base_link) at 50 Hz via /tf topic.
 - Publishes JointState for the roller joints at 50 Hz.
 - Roller joints rotate proportional to the distance travelled.
-- Provides /roller_controller/toggle_markers service (SetBool) to show/hide roller and front markers.
+- Provides /roller_controller/toggle_markers service (SetBool) to show/hide roller.
 """
 import rospy
 import math
@@ -30,12 +30,11 @@ class RollerController:
 
         self.joint_pub = rospy.Publisher('/joint_states', JointState, queue_size=10)
         self.tf_pub = rospy.Publisher('/tf', TFMessage, queue_size=10)
-        self.marker_pub = rospy.Publisher('/hole_markers_front', MarkerArray, queue_size=10)
 
         # Subscribe to direct position from encoder publisher
         self.pos_sub = rospy.Subscriber('/roller/position', Float64, self.pos_callback)
 
-        # Toggle service: show/hide roller and front markers
+        # Toggle service: show/hide roller
         self.toggle_srv = rospy.Service(
             '~toggle_markers', SetBool, self.toggle_callback
         )
@@ -48,30 +47,36 @@ class RollerController:
         self.x = self.start_x
         self.y = self.start_y
         self.z = self.start_z
-        # 90 degrees around X axis
-        self.qx = 0.7071068
-        self.qy = 0.0
-        self.qz = 0.0
-        self.qw = 0.7071068
+        # Orient upwards (+90 deg pitch relative to map / yaw relative to flap)
+        self.qx = 0.5
+        self.qy = -0.5
+        self.qz = 0.5
+        self.qw = 0.5
 
         # Publish TF and joint states at 50 Hz for smooth motion
         self.timer = rospy.Timer(rospy.Duration(0.02), self.publish_state)
         rospy.loginfo("Roller Controller initialized. Subscribing to /roller/position for encoder-driven motion.")
-        rospy.loginfo("Use service ~toggle_markers (SetBool) to show/hide roller and front markers.")
+        rospy.loginfo("Use service ~toggle_markers (SetBool) to show/hide roller.")
 
     def pos_callback(self, msg):
-        """Directly set roller position from encoder publisher."""
+        """Directly set roller position from encoder publisher.
+        
+        Roller starts at start_x (1.10 m from right edge) and travels
+        right-to-left, so position is subtracted.
+        """
         self.camera_abs_x_m = msg.data
-        self.x = self.start_x + self.camera_abs_x_m
+        # Travel up and down along Z axis
+        self.x = self.start_x
+        self.y = self.start_y
+        self.z = self.start_z + self.camera_abs_x_m
 
     def toggle_callback(self, req):
-        """Service callback: data=True shows markers, data=False hides them."""
+        """Service callback: data=True shows roller, data=False hides it."""
         self.markers_visible = req.data
         if not self.markers_visible:
-            self._delete_front_markers()
-            rospy.loginfo("Roller and front markers hidden (toggled off).")
+            rospy.loginfo("Roller hidden (toggled off).")
         else:
-            rospy.loginfo("Roller and front markers shown (toggled on).")
+            rospy.loginfo("Roller shown (toggled on).")
         return SetBoolResponse(success=True, message="Markers visible: {}".format(req.data))
 
     def publish_state(self, event):
@@ -129,24 +134,7 @@ class RollerController:
 
         self.joint_pub.publish(js)
 
-    def _delete_front_markers(self):
-        """Delete the front markers and labels when toggled off."""
-        marker_array = MarkerArray()
 
-        # Delete all markers in 'holes_front' namespace
-        m = Marker()
-        m.action = Marker.DELETEALL
-        m.ns = 'holes_front'
-        marker_array.markers.append(m)
-
-        # Delete all markers in 'hole_labels' namespace
-        m2 = Marker()
-        m2.action = Marker.DELETEALL
-        m2.ns = 'hole_labels'
-        marker_array.markers.append(m2)
-
-        self.marker_pub.publish(marker_array)
-        rospy.loginfo("Front markers and labels removed.")
 
 if __name__ == '__main__':
     try:
