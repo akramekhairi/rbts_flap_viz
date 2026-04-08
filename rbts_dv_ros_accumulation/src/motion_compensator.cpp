@@ -60,7 +60,7 @@ private:
     void velCallback(const geometry_msgs::TwistStamped::ConstPtr& msg) {
         std::lock_guard<std::mutex> lock(vel_mutex_);
         // Extract X velocity and flip it as per user empirically finding
-        current_vel_x_ = -1.0f * msg->twist.linear.x;
+        current_vel_x_ = 1.0f * msg->twist.linear.x;
     }
 
     void eventCallback(const dv_ros_msgs::EventArrayMessage::ConstPtr& events) {

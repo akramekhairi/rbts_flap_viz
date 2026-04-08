@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   rviz
   sensor_msgs
+  std_srvs
   tf2
   tf2_geometry_msgs
   tf2_ros
@@ -166,6 +167,7 @@ include_directories(
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
   scripts/roller_controller.py
+  scripts/encoder_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

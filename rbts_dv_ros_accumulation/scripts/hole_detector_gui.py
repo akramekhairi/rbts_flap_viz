@@ -4,28 +4,32 @@ import sys
 import cv2
 import rospy
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QListWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QListWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QTableWidget, QTableWidgetItem, QPushButton
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import TwistStamped
+from std_msgs.msg import Float64
 from cv_bridge import CvBridge
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
+from std_srvs.srv import SetBool, Empty, EmptyResponse
 
 class ROSThread(QThread):
     new_frame_signal = pyqtSignal(np.ndarray)
-    new_hole_signal = pyqtSignal(int, float, float, float) # id, relative_time_sec, abs_x_mm, radius_px
+    new_hole_signal = pyqtSignal(int, float, float, float) # id, relative_time_sec, abs_x_mm, radius_mm
+    clear_table_signal = pyqtSignal()
 
     def __init__(self):
         super(ROSThread, self).__init__()
         self.bridge = CvBridge()
         
-        # Physics state
-        self.vel_x = 0.0 # Robot forward velocity
-        self.camera_abs_x = 0.0 # Absolute distance traveled by the camera
-        self.last_vel_time = None
+        # Position state (direct from encoder publisher, in mm)
+        self.camera_abs_x = 0.0
         self.initial_timestamp = None  # first timestamp for relative time
+
+        # Encoder zeroing: capture the raw encoder value on first movement after launch
+        self.encoder_offset_m = None   # set once, on first encoder message that shows movement
+        self.last_raw_encoder_m = None  # track previous raw value to detect movement
         
         # Hole tracking state
         self.scale = 0.0422 # mm/px
@@ -41,35 +45,86 @@ class ROSThread(QThread):
         self.marker_pub = None  # initialized after rospy.init_node
         self.latest_hole_id = -1
         self.hole_counter = 0
+        self.markers_visible = True
 
     def run(self):
         rospy.init_node('hole_detector_gui', anonymous=True, disable_signals=True)
         self.marker_pub = rospy.Publisher('/hole_markers', MarkerArray, queue_size=10, latch=True)
         self.front_marker_pub = rospy.Publisher('/hole_markers_front', MarkerArray, queue_size=10, latch=True)
-        rospy.Subscriber('/tcp/vel', TwistStamped, self.vel_callback)
+        rospy.Subscriber('/roller/position', Float64, self.pos_callback)
         rospy.Subscriber('/motion_compensator/image', Image, self.image_callback)
+        rospy.Service('~reset', Empty, self.reset_callback)
         rospy.spin()
 
-    def vel_callback(self, msg):
-        # Extract X velocity (inverted as per previous physical coordinate mapping)
-        self.vel_x = -1.0 * msg.twist.linear.x
-        
-        current_time = msg.header.stamp.to_sec()
-        
+    def reset_callback(self, req):
+        self.reset_state()
+        return EmptyResponse()
+
+    def reset_state(self):
+        """Reset the internal states of holes, positions, RViz markers, GUI table and trigger the encoder rest."""
+        self.camera_abs_x = 0.0
+        self.initial_timestamp = None
+        self.encoder_offset_m = None
+        self.last_raw_encoder_m = None
+        self.holes = []
+        self.hole_counter = 0
+        self.latest_hole_id = -1
+
+        self._delete_all_markers()
+        self.clear_table_signal.emit()
+
+        # Reset encoder publisher so the roller goes back to start
+        try:
+            enc_reset = rospy.ServiceProxy('/encoder_publisher/reset', Empty)
+            enc_reset()
+            rospy.loginfo("Reset encoder publisher.")
+        except rospy.ServiceException as e:
+            rospy.logwarn(f"Failed to reset encoder publisher. Check if node is running: {e}")
+
+        rospy.loginfo("Environment fully reset.")
+
+    def toggle_markers(self):
+        """Toggle the visibility of front markers and roller."""
+        self.markers_visible = not self.markers_visible
+        try:
+            # Call the roller controller service
+            toggle_srv = rospy.ServiceProxy('/roller_controller/toggle_markers', SetBool)
+            toggle_srv(self.markers_visible)
+            rospy.loginfo(f"Toggled markers visible to: {self.markers_visible}")
+        except rospy.ServiceException as e:
+            rospy.logwarn(f"Failed to call toggle service. Check if roller_controller is running: {e}")
+
+    def pos_callback(self, msg):
+        """Receive absolute position (meters) from encoder publisher, convert to mm.
+
+        Position is made relative to the first encoder movement observed after
+        the GUI node starts, so the reported distance always begins at 0.
+        """
+        raw_m = msg.data
+
+        # On the very first message, just record the raw value and wait for movement
+        if self.last_raw_encoder_m is None:
+            self.last_raw_encoder_m = raw_m
+            return
+
+        # Detect first actual movement (encoder value changed from its initial reading)
+        if self.encoder_offset_m is None:
+            if raw_m != self.last_raw_encoder_m:
+                # Encoder has moved — use *this* value as the zero reference
+                self.encoder_offset_m = raw_m
+                rospy.loginfo(f"Encoder zeroed at raw position {raw_m:.6f} m")
+
+        self.last_raw_encoder_m = raw_m
+
+        # Until we have an offset, position stays at 0
+        if self.encoder_offset_m is None:
+            return
+
+        self.camera_abs_x = (raw_m - self.encoder_offset_m) * 1000.0  # convert offset-adjusted m → mm
+
         # Record initial timestamp for relative time calculation
         if self.initial_timestamp is None:
-            self.initial_timestamp = current_time
-        
-        if self.last_vel_time is None:
-            self.last_vel_time = current_time
-            return
-            
-        dt = current_time - self.last_vel_time
-        if dt > 0:
-            # Integrate position (distance in millimeters)
-            self.camera_abs_x += abs(self.vel_x) * dt * 1000.0   
-            
-        self.last_vel_time = current_time
+            self.initial_timestamp = rospy.Time.now().to_sec()
 
     def image_callback(self, msg):
         try:
@@ -83,8 +138,8 @@ class ROSThread(QThread):
         blurred_img = cv2.medianBlur(cv_image, 5)
 
         # Draw ROI boundaries
-        roi_top = 180
-        roi_bottom = 460
+        roi_top = 50    
+        roi_bottom = 590
         cv2.line(display_img, (0, roi_top), (480, roi_top), (50, 50, 50), 1)
         cv2.line(display_img, (0, roi_bottom), (480, roi_bottom), (50, 50, 50), 1)
 
@@ -141,9 +196,12 @@ class ROSThread(QThread):
                         'radius_mm': r * self.scale
                     })
                     
-                    # Output to GUI (id, relative_time, abs_x, radius)
-                    self.new_hole_signal.emit(self.hole_counter, rel_time, abs_x, r)
-                    rospy.loginfo(f"New Hole {self.hole_counter} registered! Absolute Travel X: {abs_x:.2f}mm")
+                    # Convert radius px → mm for display
+                    radius_mm = r * self.scale
+
+                    # Output to GUI (id, relative_time, abs_x, radius_mm)
+                    self.new_hole_signal.emit(self.hole_counter, rel_time, abs_x, radius_mm)
+                    rospy.loginfo(f"New Hole {self.hole_counter} registered! Absolute Travel X: {abs_x:.2f}mm, Radius: {radius_mm:.2f}mm")
                     matched_id = self.hole_counter
                     self.latest_hole_id = self.hole_counter
                     
@@ -178,6 +236,22 @@ class ROSThread(QThread):
         m.color = color
         m.lifetime = rospy.Duration(0)
         return m
+
+    def _delete_all_markers(self):
+        if self.marker_pub is None:
+            return
+        
+        marker_array = MarkerArray()
+        front_marker_array = MarkerArray()
+        
+        m = Marker()
+        m.action = 3 # Marker.DELETEALL is 3
+        
+        marker_array.markers.append(m)
+        front_marker_array.markers.append(m)
+        
+        self.marker_pub.publish(marker_array)
+        self.front_marker_pub.publish(front_marker_array)
 
     def _publish_markers(self):
         """Publish RViz MarkerArray with markers for each detected hole."""
@@ -231,8 +305,9 @@ class ROSThread(QThread):
 class HoleGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.initUI()
+        # Create thread BEFORE initUI so button connections inside initUI work
         self.ros_thread = ROSThread()
+        self.initUI()
         self.ros_thread.new_frame_signal.connect(self.update_image)
         self.ros_thread.new_hole_signal.connect(self.add_hole_entry)
         self.ros_thread.start()
@@ -250,13 +325,39 @@ class HoleGUI(QWidget):
         self.image_label.setStyleSheet("background-color: black;")
         layout.addWidget(self.image_label)
 
-        # Table for Holes on Right (4 columns: ID, Relative Time, Abs X, Radius)
+        # Table and buttons on Right
+        right_layout = QVBoxLayout()
+        
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["ID", "Time (s)", "Absolute X (mm)", "Radius (px)"])
+        self.table.setHorizontalHeaderLabels(["ID", "Time (s)", "Absolute X (mm)", "Radius (mm)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table)
+        right_layout.addWidget(self.table)
+
+        # Buttons layout
+        btn_layout = QHBoxLayout()
+        
+        self.toggle_btn = QPushButton("Toggle Roller/Markers")
+        self.toggle_btn.clicked.connect(self.ros_thread.toggle_markers)
+        
+        self.reset_btn = QPushButton("Reset Env / Roller")
+        self.reset_btn.clicked.connect(self.ros_thread.reset_state)
+        
+        btn_layout.addWidget(self.toggle_btn)
+        btn_layout.addWidget(self.reset_btn)
+        
+        right_layout.addLayout(btn_layout)
+
+        layout.addWidget(self.image_label)
+        layout.addLayout(right_layout)
 
         self.setLayout(layout)
+        
+        # Connect clear table signal
+        self.ros_thread.clear_table_signal.connect(self.clear_table)
+
+    @pyqtSlot()
+    def clear_table(self):
+        self.table.setRowCount(0)
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
@@ -267,13 +368,13 @@ class HoleGUI(QWidget):
         self.image_label.setPixmap(QPixmap.fromImage(q_img))
 
     @pyqtSlot(int, float, float, float)
-    def add_hole_entry(self, h_id, rel_time, x_mm, r_px):
+    def add_hole_entry(self, h_id, rel_time, x_mm, r_mm):
         row_position = self.table.rowCount()
         self.table.insertRow(row_position)
         self.table.setItem(row_position, 0, QTableWidgetItem(str(h_id)))
         self.table.setItem(row_position, 1, QTableWidgetItem(f"{rel_time:.2f}"))
         self.table.setItem(row_position, 2, QTableWidgetItem(f"{x_mm:.2f}"))
-        self.table.setItem(row_position, 3, QTableWidgetItem(f"{r_px:.1f}"))
+        self.table.setItem(row_position, 3, QTableWidgetItem(f"{r_mm:.2f}"))
         
         # Auto scroll to bottom
         self.table.scrollToBottom()

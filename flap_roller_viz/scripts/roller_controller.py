@@ -1,18 +1,20 @@
 #!/usr/bin/python3
 """
-Roller Controller Node (velocity-driven from bag playback)
-- Subscribes to /tcp/vel (geometry_msgs/TwistStamped) to integrate velocity into position.
+Roller Controller Node (encoder-driven, direct position)
+- Subscribes to /roller/position (Float64) for absolute roller position in meters.
 - Publishes TF (map -> roller_base_link) at 50 Hz via /tf topic.
 - Publishes JointState for the roller joints at 50 Hz.
 - Roller joints rotate proportional to the distance travelled.
-- Auto-hides the roller 2 seconds after the last velocity message.
+- Provides /roller_controller/toggle_markers service (SetBool) to show/hide roller and front markers.
 """
 import rospy
 import math
-from geometry_msgs.msg import TwistStamped, TransformStamped
+from std_msgs.msg import Float64
+from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import JointState
 from tf2_msgs.msg import TFMessage
 from visualization_msgs.msg import Marker, MarkerArray
+from std_srvs.srv import SetBool, SetBoolResponse
 
 
 class RollerController:
@@ -29,15 +31,18 @@ class RollerController:
         self.joint_pub = rospy.Publisher('/joint_states', JointState, queue_size=10)
         self.tf_pub = rospy.Publisher('/tf', TFMessage, queue_size=10)
         self.marker_pub = rospy.Publisher('/hole_markers_front', MarkerArray, queue_size=10)
-        self.vel_sub = rospy.Subscriber('/tcp/vel', TwistStamped, self.vel_callback)
 
-        # Velocity integration state
-        self.vel_x = 0.0
-        self.last_vel_time = None
-        self.last_vel_wall_time = None  # wall clock time of last velocity msg
+        # Subscribe to direct position from encoder publisher
+        self.pos_sub = rospy.Subscriber('/roller/position', Float64, self.pos_callback)
+
+        # Toggle service: show/hide roller and front markers
+        self.toggle_srv = rospy.Service(
+            '~toggle_markers', SetBool, self.toggle_callback
+        )
+
+        # Position state
         self.camera_abs_x_m = 0.0  # Absolute distance travelled in meters
-        self.hidden = False  # True once roller is hidden after bag ends
-        self.hide_timeout = 0.5  # seconds of silence before hiding
+        self.markers_visible = True  # Toggle state for marker visibility
 
         # Current roller pose
         self.x = self.start_x
@@ -51,38 +56,28 @@ class RollerController:
 
         # Publish TF and joint states at 50 Hz for smooth motion
         self.timer = rospy.Timer(rospy.Duration(0.02), self.publish_state)
-        rospy.loginfo("Roller Controller initialized. Subscribing to /tcp/vel for velocity-driven motion.")
+        rospy.loginfo("Roller Controller initialized. Subscribing to /roller/position for encoder-driven motion.")
+        rospy.loginfo("Use service ~toggle_markers (SetBool) to show/hide roller and front markers.")
 
-    def vel_callback(self, msg):
-        """Integrate velocity to update roller X position (same logic as hole_detector_gui)."""
-        self.vel_x = -1.0 * msg.twist.linear.x
-        self.last_vel_wall_time = rospy.get_rostime()
-
-        current_time = msg.header.stamp.to_sec()
-
-        if self.last_vel_time is None:
-            self.last_vel_time = current_time
-            return
-
-        dt = current_time - self.last_vel_time
-        if dt > 0:
-            self.camera_abs_x_m += abs(self.vel_x) * dt
-
-        self.last_vel_time = current_time
+    def pos_callback(self, msg):
+        """Directly set roller position from encoder publisher."""
+        self.camera_abs_x_m = msg.data
         self.x = self.start_x + self.camera_abs_x_m
+
+    def toggle_callback(self, req):
+        """Service callback: data=True shows markers, data=False hides them."""
+        self.markers_visible = req.data
+        if not self.markers_visible:
+            self._delete_front_markers()
+            rospy.loginfo("Roller and front markers hidden (toggled off).")
+        else:
+            rospy.loginfo("Roller and front markers shown (toggled on).")
+        return SetBoolResponse(success=True, message="Markers visible: {}".format(req.data))
 
     def publish_state(self, event):
         now = rospy.Time.now()
 
-        # Check if we should hide the roller (no velocity for hide_timeout seconds)
-        if self.last_vel_wall_time is not None and not self.hidden:
-            silence = (now - self.last_vel_wall_time).to_sec()
-            if silence > self.hide_timeout:
-                rospy.loginfo("No velocity data for %.1fs — hiding roller and front markers.", silence)
-                self.hidden = True
-                self._delete_front_markers()
-
-        if self.hidden:
+        if not self.markers_visible:
             # Move roller far away so it's invisible
             t = TransformStamped()
             t.header.stamp = now
@@ -135,7 +130,7 @@ class RollerController:
         self.joint_pub.publish(js)
 
     def _delete_front_markers(self):
-        """Delete the front markers and labels when the roller hides."""
+        """Delete the front markers and labels when toggled off."""
         marker_array = MarkerArray()
 
         # Delete all markers in 'holes_front' namespace

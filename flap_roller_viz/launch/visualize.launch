@@ -8,8 +8,9 @@
   <arg name="flap_pitch" default="0.0"/>
   <arg name="flap_yaw" default="0.0"/>
 
-  <!-- Bag file path -->
-  <arg name="bag" default="$(find flap_roller_viz)/../flap_circles_fully_reconstructed.bag"/>
+  <!-- Encoder serial config -->
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="baud_rate" default="9600"/>
 
   <!-- Load flap URDF -->
   <param name="flap_description" textfile="$(find wing_flap)/urdf/wing_flap.urdf"/>
@@ -27,7 +28,15 @@
     <remap from="robot_description" to="roller_description"/>
   </node>
 
-  <!-- Roller Controller: velocity-driven from bag /tcp/vel -->
+  <!-- Encoder Publisher: reads serial encoder data, publishes /tcp/vel and /roller/position -->
+  <node name="encoder_publisher" pkg="flap_roller_viz" type="encoder_publisher.py" output="screen"
+        launch-prefix="/usr/bin/python3">
+    <param name="serial_port" value="$(arg serial_port)" />
+    <param name="baud_rate" value="$(arg baud_rate)" />
+    <param name="cylinder_diameter_m" value="0.088" />
+  </node>
+
+  <!-- Roller Controller: encoder-driven via /roller/position -->
   <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
         launch-prefix="/usr/bin/python3">
     <param name="roller_radius" value="0.05" />
@@ -46,12 +55,9 @@
     <param name="constant_depth" value="0.047" />
   </node>
 
-  <!-- Hole Detector GUI (delayed 6s, uses system python for rospy compatibility) -->
+  <!-- Hole Detector GUI (delayed 1s, uses system python for rospy compatibility) -->
   <node name="hole_detector_gui" pkg="rbts_dv_ros_accumulation" type="hole_detector_gui.py" output="screen"
         launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'"/>
-
-  <!-- Bag playback (delayed 7s, starts at 15s into the bag) -->
-
 
   <!-- RViz -->
   <node name="rviz" pkg="rviz" type="rviz" args="-d $(find flap_roller_viz)/launch/config.rviz" />

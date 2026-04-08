@@ -28,8 +28,12 @@ Real-time visualization and inspection pipeline for roller-based composite flap 
 └────────────────┴───────────────┴──────────────┴─────────────────┘
 
 Data flow:
-  rosbag (/capture_node/events, /tcp/vel)
+  serial (Arduino TTY)
       │
+      └─→ encoder_publisher ───→ (/roller/position, /tcp/vel)
+                                         │
+      ┌──────────────────────────────────┤
+      │                                  │
       ├─→ motion_compensator → compensated image → hole_detector_gui
       │                                                 │
       ├─→ roller_controller (TF + joint states) ←───────┘ (markers)
@@ -79,36 +83,34 @@ echo "source ~/catkin_ws/devel/setup.bash" >> ~/.bashrc
 
 ### Running the full pipeline
 
-The pipeline requires a ROS bag file containing event data (`/capture_node/events`) and velocity data (`/tcp/vel`).
+The pipeline now utilizes a real-time serial stream from a hardware incremental encoder to drive the model position and velocity.
 
-**Step 1**: Launch the visualization pipeline:
+**Step 1**: Ensure your hardware encoder is connected (typically to `/dev/ttyUSB0`) and then launch the visualization pipeline:
 ```bash
 roslaunch flap_roller_viz visualize.launch
 ```
 
-**Step 2**: In a separate terminal, play the bag file:
-```bash
-rosbag play /path/to/your/bag_file.bag
-```
+**Step 2**: The encoder publisher will begin broadcasting data, and RViz and the Tracker GUI should open automatically.
 
-You can also specify the bag path and flap position via launch arguments:
+You can customize the initial flap position in RViz via launch arguments:
 ```bash
-roslaunch flap_roller_viz visualize.launch bag:=/path/to/bag_file.bag flap_x:=0.0 flap_y:=0.0 flap_z:=0.0
+roslaunch flap_roller_viz visualize.launch flap_x:=0.0 flap_y:=0.0 flap_z:=0.0
 ```
 
 ### What to expect
 
 1. **RViz** opens showing the wing flap and roller models
 2. The **roller moves** along the flap surface driven by velocity data from the bag
-3. The **Hole Detection GUI** window opens showing the motion-compensated event image with detected circles
+3. The **Hole Detection GUI** window opens showing the motion-compensated event image with detected circles. **Detected circles are accurately converted from pixels to physical units (mm)** using the calibrated focal scale.
 4. **Hole markers** appear on the flap surface in RViz as holes are detected
-5. When the bag finishes playing, the roller **auto-hides** after 0.5s of silence
+5. The GUI provides convenient operations:
+   - **Toggle Roller/Markers Button:** Allows quickly hiding or revealing the roller and visual markers.
+   - **Reset Env/Roller Button:** Allows resetting the operational session, flushing current RViz markers, GUI tracked hole variables, and triggering the hardware encoder publisher node to virtually reset its origin offset back to `0.0`.
 
 ### Launch arguments
 
 | Argument | Default | Description |
 |---|---|---|
-| `bag` | `<package_path>/../flap_circles_fully_reconstructed.bag` | Path to the ROS bag file |
 | `flap_x/y/z` | `0.0` | Flap position in map frame (meters) |
 | `flap_roll/pitch/yaw` | `0.0` | Flap orientation in map frame (radians) |
 
@@ -120,7 +122,8 @@ roslaunch flap_roller_viz visualize.launch bag:=/path/to/bag_file.bag flap_x:=0.
 Main orchestration package. Contains:
 - `visualize.launch` — master launch file that starts all nodes
 - `config.rviz` — pre-configured RViz layout
-- `roller_controller.py` — integrates velocity to animate the roller model and publishes TF/JointState
+- `encoder_publisher.py` — robust serial wrapper reading incoming hardware data, turning it into positional messages (`/roller/position`) and driving velocity (`/tcp/vel`). Includes the origin `~reset` service capability.
+- `roller_controller.py` — integrates position data to animate the roller model and publishes TF/JointState. Exposes marker toggling (`~toggle_markers`) service.
 
 ### `wing_flap`
 URDF description package for the wing flap model (exported from SolidWorks). Contains the mesh (STL) and URDF definition.
