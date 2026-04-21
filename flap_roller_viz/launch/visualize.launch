@@ -53,7 +53,7 @@
         launch-prefix="bash -c 'sleep 5; exec $0 $@'">
     <remap from="/motion_compensator/events" to="/capture_node/events" />
     <param name="accumulation_time_ms" value="10" />
-    <param name="contribution" value="0.4" />
+    <param name="contribution" value="0.45" />
     <param name="constant_depth" value="0.047" />
   </node>
 

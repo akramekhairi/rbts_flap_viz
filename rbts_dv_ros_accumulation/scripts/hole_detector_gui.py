@@ -33,7 +33,7 @@ class ROSThread(QThread):
         
         # Hole tracking state
         self.scale = 0.0422 # mm/px
-        self.tracking_distance_threshold_mm = 30.0 # Associate detections within a 30mm physical band
+        self.tracking_distance_threshold_mm = 18.5 # Associate detections within a 50mm physical band
         
         self.holes = [] # list of dicts
         
@@ -132,14 +132,23 @@ class ROSThread(QThread):
             return
 
         # Pre-process image
-        display_img = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2BGR)
+        display_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB) # PyQt prefers RGB
         blurred_img = cv2.medianBlur(cv_image, 5)
 
-        # Draw ROI boundaries
+        # ROI and Center Parameters
         roi_top = 50    
         roi_bottom = 590
-        cv2.line(display_img, (0, roi_top), (480, roi_top), (50, 50, 50), 1)
-        cv2.line(display_img, (0, roi_bottom), (480, roi_bottom), (50, 50, 50), 1)
+        img_width = 480
+        img_center_x = img_width // 2  # 240
+        center_window_px = 200          # Capture when cx is 40 to 440
+
+        # # Draw ROI boundaries (Vertical)
+        # cv2.line(display_img, (0, roi_top), (img_width, roi_top), (50, 50, 50), 1)
+        # cv2.line(display_img, (0, roi_bottom), (img_width, roi_bottom), (50, 50, 50), 1)
+        
+        # # Draw "Detection Window" (Horizontal Center)
+        # cv2.line(display_img, (img_center_x - center_window_px, 0), (img_center_x - center_window_px, 640), (255, 255, 0), 1, cv2.LINE_AA)
+        # cv2.line(display_img, (img_center_x + center_window_px, 0), (img_center_x + center_window_px, 640), (255, 255, 0), 1, cv2.LINE_AA)
 
         # Hough Circles Detection
         circles = cv2.HoughCircles(
@@ -148,29 +157,22 @@ class ROSThread(QThread):
             dp=2,
             minDist=480, 
             param1=100,
-            param2=20,
-            minRadius=106,
-            maxRadius=112
+            param2=25,
+            minRadius=104,
+            maxRadius=114
         )
 
-        detected_centers = []
         if circles is not None:
             circles = np.uint16(np.around(circles))
             for i in circles[0, :]:
                 cx, cy, r = i[0], i[1], i[2]
                 
-                # Strict Edge / ROI Filter
+                # 1. Vertical ROI Filter
                 if cy < roi_top or cy > roi_bottom: 
                     continue
-                
-                # Draw the circle and center
-                cv2.circle(display_img, (cx, cy), r, (0, 255, 0), 2)
-                cv2.circle(display_img, (cx, cy), 2, (0, 0, 255), -1)
-                
-                # Absolute tracking uses strictly the camera travel position
+
+                # 2. Check if already tracked (Duplicate prevention)
                 abs_x = self.camera_abs_x
-                
-                # Check tracking to avoid duplicate detections
                 matched = False
                 matched_id = -1
                 for hole in self.holes:
@@ -179,37 +181,36 @@ class ROSThread(QThread):
                         matched = True
                         matched_id = hole['id']
                         break
-                        
-                if not matched:
-                    # New Hole Detected
+                
+                # 3. Horizontal "Middle" Filter 
+                # We only register a NEW hole if it is within the center window
+                in_center_zone = abs(cx - img_center_x) < center_window_px
+
+                if not matched and in_center_zone:
+                    # New Hole Detected in the Center!
                     self.hole_counter += 1
-                    
-                    # Compute relative time
                     current_ts = msg.header.stamp.to_sec()
                     rel_time = current_ts - self.initial_timestamp if self.initial_timestamp else 0.0
+                    radius_mm = r * self.scale
                     
                     self.holes.append({
                         'id': self.hole_counter,
                         'abs_x': abs_x,
-                        'radius_mm': r * self.scale
+                        'radius_mm': radius_mm
                     })
                     
-                    # Convert radius px → mm for display
-                    radius_mm = r * self.scale
-
-                    # Output to GUI (id, relative_time, abs_x, radius_mm)
                     self.new_hole_signal.emit(self.hole_counter, rel_time, abs_x, radius_mm)
-                    rospy.loginfo(f"New Hole {self.hole_counter} registered! Absolute Travel X: {abs_x:.2f}mm, Radius: {radius_mm:.2f}mm")
+                    rospy.loginfo(f"Hole {self.hole_counter} centered and registered at {abs_x:.2f}mm")
                     matched_id = self.hole_counter
                     self.latest_hole_id = self.hole_counter
-                    
-                    # Publish RViz markers
                     self._publish_markers()
 
-                # Put ID Text on image for visual tracking
-                cv2.putText(display_img, f"#{matched_id}", (cx - 15, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # Visual Feedback
+                color = (0, 255, 0) if matched_id != -1 else (0, 165, 255) # Green if registered, Orange if seen but not centered
+                cv2.circle(display_img, (cx, cy), r, color, 2)
+                if matched_id != -1:
+                    cv2.putText(display_img, f"#{matched_id}", (cx - 15, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-        # Pass frame to GUI
         self.new_frame_signal.emit(display_img)
 
     def _make_hole_marker(self, hole, ns, marker_id, y_pos, color, thickness=0.001):
