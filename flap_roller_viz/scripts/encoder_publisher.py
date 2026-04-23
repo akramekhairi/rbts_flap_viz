@@ -11,7 +11,7 @@ import re
 import math
 import rospy
 import serial
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TwistStamped, PointStamped
 from std_msgs.msg import Float64
 from std_srvs.srv import Empty, EmptyResponse
 
@@ -32,6 +32,7 @@ class EncoderPublisher:
         # Publishers
         self.vel_pub = rospy.Publisher('/tcp/vel', TwistStamped, queue_size=10)
         self.pos_pub = rospy.Publisher('/roller/position', Float64, queue_size=10)
+        self.pos_stamped_pub = rospy.Publisher('/roller/position_stamped', PointStamped, queue_size=10)
 
         # State
         self.last_position_m = None
@@ -58,13 +59,21 @@ class EncoderPublisher:
         return EmptyResponse()
 
     def run(self):
+        # Block on serial.readline() (existing 0.1 s timeout) instead of polling
+        # in_waiting in a tight loop; the previous loop pinned a CPU core and
+        # starved other Python nodes of scheduling time.
         while not rospy.is_shutdown():
-            if self.ser.in_waiting > 0:
-                try:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+            try:
+                raw = self.ser.readline()
+                if not raw:
+                    continue  # readline timeout, no full line yet
+                line = raw.decode('utf-8', errors='ignore').strip()
+                if line:
                     self._process_line(line)
-                except (ValueError, IndexError):
-                    pass  # partial or garbled serial lines
+            except (ValueError, IndexError):
+                pass  # partial or garbled serial lines
+            except serial.SerialException as e:
+                rospy.logerr_throttle(5.0, "Serial error: %s", e)
         self.ser.close()
 
     def _process_line(self, line):
@@ -110,6 +119,15 @@ class EncoderPublisher:
 
         # Publish absolute position on /roller/position (Float64)
         self.pos_pub.publish(Float64(data=position_m))
+
+        # Stamped variant: hole_detector uses this + /tcp/vel to look up the
+        # encoder position at arbitrary frame timestamps (interpolated) so it
+        # can correct pixel-offset holes to their center-equivalent positions.
+        pos_stamped_msg = PointStamped()
+        pos_stamped_msg.header.stamp = now
+        pos_stamped_msg.header.frame_id = 'encoder'
+        pos_stamped_msg.point.x = position_m
+        self.pos_stamped_pub.publish(pos_stamped_msg)
 
 
 if __name__ == '__main__':

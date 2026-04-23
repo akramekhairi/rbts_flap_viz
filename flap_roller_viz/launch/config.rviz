@@ -1,6 +1,15 @@
 Panels:
   - Class: rviz/Displays
+    Help Height: 138
     Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+    Tree Height: 396
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
 Visualization Manager:
   Class: ""
   Displays:
@@ -10,7 +19,7 @@ Visualization Manager:
       Color: 160; 160; 164
       Enabled: true
       Line Style:
-        Line Width: 0.03
+        Line Width: 0.029999999329447746
         Value: Lines
       Name: Grid
       Normal Cell Count: 0
@@ -28,8 +37,15 @@ Visualization Manager:
       Enabled: true
       Links:
         All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
         Expand Tree: false
-        Expand Upward: false
+        Link Tree Style: Links in Alphabetic Order
+        flap_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
       Name: Flap Model
       Robot Description: flap_description
       TF Prefix: ""
@@ -42,8 +58,30 @@ Visualization Manager:
       Enabled: true
       Links:
         All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
         Expand Tree: false
-        Expand Upward: false
+        Link Tree Style: Links in Alphabetic Order
+        link_elastomer:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link_roller:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link_support:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        roller_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
       Name: Roller Model
       Robot Description: roller_description
       TF Prefix: ""
@@ -55,7 +93,7 @@ Visualization Manager:
       Marker Topic: /hole_markers
       Name: Hole Markers (Surface)
       Namespaces:
-        holes_surface: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -63,15 +101,16 @@ Visualization Manager:
       Marker Topic: /hole_markers_front
       Name: Hole Markers (Front)
       Namespaces:
-        holes_front: true
-        hole_labels: true
+        {}
       Queue Size: 100
       Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
+    Default Light: true
     Fixed Frame: map
     Frame Rate: 30
+  Name: root
   Tools:
     - Class: rviz/Interact
       Hide Inactive Objects: true
@@ -81,27 +120,33 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 2.0
+      Distance: 1.342749834060669
       Enable Stereo Rendering:
-        Stereo Eye Separation: 0.06
+        Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Field of View: 0.7853981852531433
       Focal Point:
-        X: 1.0
-        Y: -0.1
-        Z: 0.4
+        X: 1.2444467544555664
+        Y: -0.08937728404998779
+        Z: 0.5279729962348938
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
       Name: Current View
-      Near Clip Distance: 0.01
-      Pitch: 0.5
+      Near Clip Distance: 0.009999999776482582
+      Pitch: -0.07499996572732925
       Target Frame: <Fixed Frame>
-      Yaw: 3.93
+      Yaw: 4.7050042152404785
+    Saved: ~
 Window Geometry:
   Displays:
-    collapsed: false
-  Height: 800
-  Hide Left Dock: false
+    collapsed: true
+  Height: 1696
+  Hide Left Dock: true
   Hide Right Dock: false
-  Width: 1200
-  X: 100
-  Y: 100
+  QMainWindow State: 000000ff00000000fd0000000100000000000001f700000284fc0200000001fb000000100044006900730070006c006100790073000000006e000002840000018200ffffff00000a200000060400000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Width: 2592
+  X: 144
+  Y: 54

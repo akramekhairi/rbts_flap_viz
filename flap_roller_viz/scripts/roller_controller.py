@@ -17,6 +17,52 @@ from visualization_msgs.msg import Marker, MarkerArray
 from std_srvs.srv import SetBool, SetBoolResponse
 
 
+def _quat_mult(q1, q2):
+    """Hamilton product q1 * q2, both (x, y, z, w)."""
+    x1, y1, z1, w1 = q1
+    x2, y2, z2, w2 = q2
+    return (
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    )
+
+
+def _quat_normalize(q):
+    n = math.sqrt(sum(c * c for c in q))
+    if n < 1e-9:
+        return (0.0, 0.0, 0.0, 1.0)
+    return tuple(c / n for c in q)
+
+
+def _quat_rx(roll_rad):
+    h = 0.5 * roll_rad
+    return (math.sin(h), 0.0, 0.0, math.cos(h))
+
+
+def _quat_ry(pitch_rad):
+    h = 0.5 * pitch_rad
+    return (0.0, math.sin(h), 0.0, math.cos(h))
+
+
+def _quat_rz(yaw_rad):
+    h = 0.5 * yaw_rad
+    return (0.0, 0.0, math.sin(h), math.cos(h))
+
+
+def _compose_map_rpy_and_mount(roll_rad, pitch_rad, yaw_rad, mount_xyzw):
+    """Orientation in map: fixed-frame RPY about map X, Y, Z (same order as typical ROS RPY), then CAD mount.
+
+    Combined rotation R = Rz(yaw) * Ry(pitch) * Rx(roll), applied before R_mount.
+    """
+    q_roll = _quat_rx(roll_rad)
+    q_pitch = _quat_ry(pitch_rad)
+    q_yaw = _quat_rz(yaw_rad)
+    q_map = _quat_mult(_quat_mult(q_yaw, q_pitch), q_roll)
+    return _quat_normalize(_quat_mult(q_map, mount_xyzw))
+
+
 class RollerController:
     def __init__(self):
         rospy.init_node('roller_controller')
@@ -24,9 +70,9 @@ class RollerController:
         self.support_radius = rospy.get_param('~support_radius', 0.02)
 
         # Starting position of the roller on the flap
-        self.start_x = rospy.get_param('~start_x', 0.15952)
+        self.start_x = rospy.get_param('~start_x', 1.29)
         self.start_y = rospy.get_param('~start_y', -0.11)
-        self.start_z = rospy.get_param('~start_z', 0.85)
+        self.start_z = rospy.get_param('~start_z', 0.26)
 
         self.joint_pub = rospy.Publisher('/joint_states', JointState, queue_size=10)
         self.tf_pub = rospy.Publisher('/tf', TFMessage, queue_size=10)
@@ -47,11 +93,32 @@ class RollerController:
         self.x = self.start_x
         self.y = self.start_y
         self.z = self.start_z
-        # Orient upwards (+90 deg pitch relative to map / yaw relative to flap)
-        self.qx = 0.5
-        self.qy = -0.5
-        self.qz = 0.5
-        self.qw = 0.5
+        # CAD "mount" quaternion (default: original vertical-travel pose), then extra RPY in map frame.
+        mount = rospy.get_param(
+            '~mount_quaternion',
+            [0.5, -0.5, 0.5, 0.5],
+        )
+        roll_extra_deg = rospy.get_param('~roll_extra_deg', 0.0)
+        pitch_extra_deg = rospy.get_param('~pitch_extra_deg', 0.0)
+        yaw_extra_deg = rospy.get_param('~yaw_extra_deg', 90.0)
+        q = _compose_map_rpy_and_mount(
+            math.radians(roll_extra_deg),
+            math.radians(pitch_extra_deg),
+            math.radians(yaw_extra_deg),
+            tuple(mount),
+        )
+        self.qx, self.qy, self.qz, self.qw = q
+        rospy.loginfo(
+            'Roller orientation: roll=%.3f pitch=%.3f yaw=%.3f (deg) mount=%s -> q=[%.4f, %.4f, %.4f, %.4f]',
+            roll_extra_deg,
+            pitch_extra_deg,
+            yaw_extra_deg,
+            mount,
+            self.qx,
+            self.qy,
+            self.qz,
+            self.qw,
+        )
 
         # Publish TF and joint states at 50 Hz for smooth motion
         self.timer = rospy.Timer(rospy.Duration(0.02), self.publish_state)
@@ -61,11 +128,10 @@ class RollerController:
     def pos_callback(self, msg):
         """Directly set roller position from encoder publisher.
         
-        Roller starts at start_x (1.10 m from right edge) and travels
-        right-to-left, so position is subtracted.
+        Roller starts at configured start pose. Encoder distance maps to
+        translation along Z for up/down motion in RViz.
         """
         self.camera_abs_x_m = msg.data
-        # Travel up and down along Z axis
         self.x = self.start_x
         self.y = self.start_y
         self.z = self.start_z + self.camera_abs_x_m
@@ -125,8 +191,8 @@ class RollerController:
         js.header.stamp = now
         js.name = ['joint_roller', 'joint_elastomer', 'joint_support']
 
-        angle_roller = self.camera_abs_x_m / self.roller_radius
-        angle_support = self.camera_abs_x_m / self.support_radius
+        angle_roller = -self.camera_abs_x_m / self.roller_radius
+        angle_support = -self.camera_abs_x_m / self.support_radius
 
         js.position = [angle_roller, angle_roller, angle_support]
         js.velocity = []

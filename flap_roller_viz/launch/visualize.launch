@@ -12,6 +12,25 @@
   <arg name="serial_port" default="/dev/ttyUSB0"/>
   <arg name="baud_rate" default="9600"/>
 
+  <!-- Event camera capture (dv_ros_capture) launched in-process so we do not
+       need to run dv_ros_visualization's full launch from another terminal
+       (which adds its own accumulator + GUI + RViz competing for CPU/USB).
+       NOTE: source ~/dv_ws/devel/setup.bash *before* this workspace's
+       setup.bash so roslaunch can find the dv_ros_capture package. Example:
+         source ~/dv_ws/devel/setup.bash
+         source ~/handheld_rbts_ws/devel/setup.bash (with extend flag)
+         roslaunch flap_roller_viz visualize.launch
+  -->
+  <arg name="launch_capture" default="true"/>
+  <arg name="capture_camera_name" default=""/>
+  <!-- Time slice the capture node uses to batch events before publishing (us).
+       Smaller = lower latency but more ROS message overhead. 1000us = 1ms is the upstream default. -->
+  <arg name="capture_time_increment_us" default="1000"/>
+  <!-- Background-activity noise filter: rejects events that are not supported by
+       a recent neighbor event within the given time window (us). Lower = more aggressive. -->
+  <arg name="capture_noise_filter_enabled" default="true"/>
+  <arg name="capture_noise_ba_time_us" default="2000"/>
+
   <!-- Load flap URDF -->
   <param name="flap_description" textfile="$(find wing_flap)/urdf/wing_flap.urdf"/>
   <node name="flap_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
@@ -37,8 +56,7 @@
   </node>
 
   <!-- Roller Controller: encoder-driven via /roller/position -->
-  <!-- start_x = right_edge_x - 1.10 m  (roller starts 110 cm from right edge, travels right-to-left) -->
-  <!-- Tune start_x by measuring the flap's right-edge X in RViz -->
+  <!-- start_x = 2.40 m - 1.10 m = 1.30 m -->
   <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
         launch-prefix="/usr/bin/python3">
     <param name="roller_radius" value="0.05" />
@@ -46,21 +64,90 @@
     <param name="start_x" value="1.29" />
     <param name="start_y" value="-0.11" />
     <param name="start_z" value="0.26" />
+    <!-- Extra RPY in map frame after CAD mount (deg). Order: roll (map X), pitch (map Y), yaw (map Z). -->
+    <param name="roll_extra_deg" value="0" />
+    <param name="pitch_extra_deg" value="0" />
+    <param name="yaw_extra_deg" value="0" />
   </node>
+
+  <!-- DV capture node: events-only, with background-activity noise filter.
+       Disabling frames/imu/triggers cuts USB bandwidth and CPU substantially on
+       this 2-core machine, which is the dominant source of the ~300ms image age. -->
+  <group if="$(arg launch_capture)">
+    <node pkg="dv_ros_capture" type="capture_node" name="capture_node" clear_params="true" output="screen">
+      <param name="frames"                       value="false"/>
+      <param name="events"                       value="true"/>
+      <param name="imu"                          value="false"/>
+      <param name="triggers"                     value="false"/>
+      <param name="timeIncrement"                value="$(arg capture_time_increment_us)"/>
+      <param name="noiseFiltering"               value="$(arg capture_noise_filter_enabled)"/>
+      <param name="noiseBackgroundActivityTime"  value="$(arg capture_noise_ba_time_us)"/>
+      <param name="cameraName"                   value="$(arg capture_camera_name)"/>
+      <param name="transformImuToCameraFrame"    value="false"/>
+      <param name="unbiasedImuData"              value="false"/>
+    </node>
+  </group>
 
   <!-- Motion Compensator (delayed 5s to let RViz and TF settle) -->
   <node pkg="rbts_dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
         launch-prefix="bash -c 'sleep 5; exec $0 $@'">
     <remap from="/motion_compensator/events" to="/capture_node/events" />
-    <param name="accumulation_time_ms" value="10" />
+    <!-- Sliding-window frame generation. Each tick at `stride_ms` renders a
+         frame from the last `window_size_ms` of events. stride < window
+         produces overlapping (smoother) frames; stride == window disables
+         sliding. -->
+    <param name="window_size_ms" value="10" />
+    <param name="stride_ms"      value="0" />
     <param name="contribution" value="0.45" />
     <param name="constant_depth" value="0.047" />
   </node>
 
-  <!-- Hole Detector GUI (delayed 1s, uses system python for rospy compatibility) -->
-  <node name="hole_detector_gui" pkg="rbts_dv_ros_accumulation" type="hole_detector_gui.py" output="screen"
-        launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'"/>
+  <!-- Hole Detector (C++): contour-based detection on /motion_compensator/image,
+       publishes /hole_markers, /motion_compensator/annotated_image, /hole_events.
+       Delayed 5s like the motion compensator so the image topic is up first. -->
+  <node pkg="rbts_dv_ros_accumulation" type="hole_detector" name="hole_detector" output="screen"
+        launch-prefix="bash -c 'sleep 5; exec $0 $@'">
+    <param name="scale_mm_per_px" value="0.0422" />
+    <param name="tracking_distance_threshold_mm" value="18.5" />
+    <param name="roi_top" value="50" />
+    <param name="roi_bottom" value="590" />
+    <param name="center_window_px" value="200" />
+    <param name="min_radius_px" value="104" />
+    <param name="max_radius_px" value="114" />
+    <param name="median_blur_ksize" value="5" />
+    <param name="use_otsu" value="true" />
+    <param name="threshold_value" value="80" />
+    <!-- Default to Hough: same algorithm/params as the original Python detector
+         (dp=2, param1=100, param2=25, minR=104, maxR=114). Set to false to use
+         the experimental contour ring detector. -->
+    <param name="use_hough" value="true" />
+    <param name="publish_annotated" value="true" />
+    <!-- Off-center correction: project each detected circle to its
+         center-equivalent world position. pixel_offset_sign flips the sign
+         if the correction goes the wrong way; offset_min_vel_mmps gates the
+         velocity-based time shift vs scale-only fallback; history_seconds
+         sizes the stamped encoder/velocity lookup buffers. -->
+    <param name="pixel_offset_sign"   value="1.0" />
+    <param name="offset_min_vel_mmps" value="5.0" />
+    <param name="history_seconds"     value="2.0" />
+    <!-- Marker placement parameters: must mirror roller_controller's start pose. -->
+    <param name="roller_start_x" value="1.29" />
+    <param name="roller_start_y" value="-0.11" />
+    <param name="roller_start_z" value="0.26" />
+    <param name="marker_frame_id" value="map" />
+  </node>
 
-  <!-- RViz -->
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find flap_roller_viz)/launch/config.rviz" />
+  <!-- Unified GUI: embeds RViz + upscaled hole-detector image stream + scrollable
+       hole list + controls + read-only detector params, all in one window.
+       Replaces the previous standalone rviz and hole_detector_gui nodes.
+       Delayed 1s so TF and topics are up before the embedded RViz initialises.
+       Pass fullscreen:=true on the roslaunch command line for true fullscreen
+       at startup (or press F11 inside the window to toggle, Esc to exit). -->
+  <arg name="fullscreen" default="false"/>
+  <node name="unified_gui" pkg="rbts_dv_ros_accumulation" type="unified_gui.py" output="screen"
+        launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'">
+    <param name="rviz_config" value="$(find flap_roller_viz)/launch/config.rviz"/>
+    <param name="logo_dir" value="$(find flap_roller_viz)/../images"/>
+    <param name="fullscreen" value="$(arg fullscreen)"/>
+  </node>
 </launch>

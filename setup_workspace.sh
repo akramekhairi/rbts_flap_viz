@@ -17,7 +17,7 @@ sudo apt update
 sudo apt install -y ros-noetic-desktop-full \
     ros-noetic-robot-state-publisher ros-noetic-tf2-ros ros-noetic-rviz \
     ros-noetic-cv-bridge ros-noetic-image-transport ros-noetic-dynamic-reconfigure ros-noetic-visualization-msgs \
-    python3-pyqt5 python3-opencv python3-pip
+    python3-pyqt5 python3-opencv python3-pip python3-rospkg python3-rospy python3-serial
 
 # Add repository for GCC 13 needed by modern dv-processing
 sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
@@ -63,6 +63,11 @@ if [ -n "$CONDA_PREFIX" ]; then
     IGNORE_ARGS="-DCMAKE_IGNORE_PATH=$CONDA_PREFIX/lib/cmake"
 fi
 
+# Ensure the Python entry-point scripts in this workspace are executable so
+# `roslaunch` can invoke them directly without relying on `python3 <file>`.
+echo "Ensuring Python scripts are executable..."
+find "$SCRIPT_DIR" -type f -name "*.py" -path "*/scripts/*" -exec chmod +x {} +
+
 catkin_make $IGNORE_ARGS
 
 echo ""
@@ -70,5 +75,14 @@ echo "================================================="
 echo "                 Setup Complete!                 "
 echo "================================================="
 echo "Run the following command to finalize your terminal:"
-echo "source $WS_DIR/devel/setup.bash"
+echo "  source $WS_DIR/devel/setup.bash"
+echo ""
+echo "To launch the unified RViz + Hole Detection GUI:"
+echo "  roslaunch flap_roller_viz visualize.launch"
+echo ""
+echo "Optional launch args:"
+echo "  fullscreen:=true              # borderless fullscreen at startup"
+echo "                                # (F11 toggles, Esc exits at runtime)"
+echo "  serial_port:=/dev/ttyUSB0     # encoder serial port"
+echo "  launch_capture:=false         # skip event-camera capture node"
 echo ""

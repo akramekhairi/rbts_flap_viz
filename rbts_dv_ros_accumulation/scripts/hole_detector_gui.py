@@ -1,330 +1,162 @@
 #!/usr/bin/env python3
+"""Thin PyQt viewer for the C++ hole_detector node.
+
+Subscribes to:
+  /motion_compensator/annotated_image  sensor_msgs/Image (bgr8) -- pre-drawn overlays
+  /hole_events                         rbts_dv_ros_accumulation/HoleEvent
+
+All heavy work (medianBlur / threshold / contour detection / marker publishing)
+happens in the C++ hole_detector. This viewer only blits frames to a QLabel and
+appends rows to a QTableWidget, so it has near-zero CPU cost.
+"""
 
 import sys
-import cv2
 import rospy
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QListWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QTableWidget, QTableWidgetItem, QPushButton
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QHeaderView,
+    QTableWidget, QTableWidgetItem, QPushButton,
+)
+from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
+
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64
 from cv_bridge import CvBridge
-from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import ColorRGBA
-from std_srvs.srv import SetBool, Empty, EmptyResponse
+from std_srvs.srv import SetBool, Empty
+
+from rbts_dv_ros_accumulation.msg import HoleEvent
+
+# Qt 5.14+ has Format_BGR888; ROS Noetic ships PyQt5 5.12 which only has
+# Format_RGB888. Detect once and pick the matching code path so old systems
+# don't raise AttributeError silently inside the slot.
+_HAS_BGR888 = hasattr(QImage, 'Format_BGR888')
+
 
 class ROSThread(QThread):
     new_frame_signal = pyqtSignal(np.ndarray)
-    new_hole_signal = pyqtSignal(int, float, float, float) # id, relative_time_sec, abs_x_mm, radius_mm
+    new_hole_signal = pyqtSignal(int, float, float, float)  # id, rel_time, abs_x_mm, radius_mm
     clear_table_signal = pyqtSignal()
 
     def __init__(self):
         super(ROSThread, self).__init__()
         self.bridge = CvBridge()
-        
-        # Position state (direct from encoder publisher, in mm)
-        self.camera_abs_x = 0.0
-        self.initial_timestamp = None  # first timestamp for relative time
-
-        # Encoder zeroing: capture the raw encoder value on first movement after launch
-        self.encoder_offset_m = None   # set once, on first encoder message that shows movement
-        self.last_raw_encoder_m = None  # track previous raw value to detect movement
-        
-        # Hole tracking state
-        self.scale = 0.0422 # mm/px
-        self.tracking_distance_threshold_mm = 18.5 # Associate detections within a 50mm physical band
-        
-        self.holes = [] # list of dicts
-        
-        # RViz marker parameters  — must match roller_controller start_x and start_z
-        self.roller_start_x = 1.29     # meters
-        self.surface_y = -0.045        # meters, hole markers on flap surface
-        self.roller_start_z = 0.26     # meters, roller Z (surface height)
-        self.marker_pub = None  # initialized after rospy.init_node
-        self.latest_hole_id = -1
-        self.hole_counter = 0
         self.markers_visible = True
+        self.frames_received = 0
 
     def run(self):
         rospy.init_node('hole_detector_gui', anonymous=True, disable_signals=True)
-        self.marker_pub = rospy.Publisher('/hole_markers', MarkerArray, queue_size=10, latch=True)
-        rospy.Subscriber('/roller/position', Float64, self.pos_callback)
-        rospy.Subscriber('/motion_compensator/image', Image, self.image_callback)
-        rospy.Service('~reset', Empty, self.reset_callback)
+        rospy.Subscriber(
+            '/motion_compensator/annotated_image',
+            Image,
+            self.image_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+            tcp_nodelay=True,
+        )
+        rospy.Subscriber(
+            '/hole_events',
+            HoleEvent,
+            self.hole_event_callback,
+            queue_size=50,
+            tcp_nodelay=True,
+        )
+        rospy.Timer(rospy.Duration(2.0), self._heartbeat)
+        rospy.loginfo("hole_detector_gui: subscribed to /motion_compensator/annotated_image and /hole_events")
         rospy.spin()
 
-    def reset_callback(self, req):
-        self.reset_state()
-        return EmptyResponse()
-
-    def reset_state(self):
-        """Reset the internal states of holes, positions, RViz markers, GUI table and trigger the encoder rest."""
-        self.camera_abs_x = 0.0
-        self.initial_timestamp = None
-        self.encoder_offset_m = None
-        self.last_raw_encoder_m = None
-        self.holes = []
-        self.hole_counter = 0
-        self.latest_hole_id = -1
-
-        self._delete_all_markers()
-        self.clear_table_signal.emit()
-
-        # Reset encoder publisher so the roller goes back to start
-        try:
-            enc_reset = rospy.ServiceProxy('/encoder_publisher/reset', Empty)
-            enc_reset()
-            rospy.loginfo("Reset encoder publisher.")
-        except rospy.ServiceException as e:
-            rospy.logwarn(f"Failed to reset encoder publisher. Check if node is running: {e}")
-
-        rospy.loginfo("Environment fully reset.")
-
-    def toggle_markers(self):
-        """Toggle the visibility of roller."""
-        self.markers_visible = not self.markers_visible
-        try:
-            # Call the roller controller service
-            toggle_srv = rospy.ServiceProxy('/roller_controller/toggle_markers', SetBool)
-            toggle_srv(self.markers_visible)
-            rospy.loginfo(f"Toggled markers visible to: {self.markers_visible}")
-        except rospy.ServiceException as e:
-            rospy.logwarn(f"Failed to call toggle service. Check if roller_controller is running: {e}")
-
-    def pos_callback(self, msg):
-        """Receive absolute position (meters) from encoder publisher, convert to mm.
-
-        Position is made relative to the first encoder movement observed after
-        the GUI node starts, so the reported distance always begins at 0.
-        """
-        raw_m = msg.data
-
-        # On the very first message, just record the raw value and wait for movement
-        if self.last_raw_encoder_m is None:
-            self.last_raw_encoder_m = raw_m
-            return
-
-        # Detect first actual movement (encoder value changed from its initial reading)
-        if self.encoder_offset_m is None:
-            if raw_m != self.last_raw_encoder_m:
-                # Encoder has moved — use *this* value as the zero reference
-                self.encoder_offset_m = raw_m
-                rospy.loginfo(f"Encoder zeroed at raw position {raw_m:.6f} m")
-
-        self.last_raw_encoder_m = raw_m
-
-        # Until we have an offset, position stays at 0
-        if self.encoder_offset_m is None:
-            return
-
-        self.camera_abs_x = (raw_m - self.encoder_offset_m) * 1000.0  # convert offset-adjusted m → mm
-
-        # Record initial timestamp for relative time calculation
-        if self.initial_timestamp is None:
-            self.initial_timestamp = rospy.Time.now().to_sec()
+    def _heartbeat(self, _event):
+        if self.frames_received == 0:
+            rospy.logwarn_throttle(
+                5.0,
+                "hole_detector_gui: no annotated frames received yet. "
+                "Check that capture_node, motion_compensator, and hole_detector are running.")
 
     def image_callback(self, msg):
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono8')
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
-            rospy.logerr(f"CVBridge Error: {e}")
+            rospy.logerr_throttle(2.0, "CVBridge Error: %s" % e)
             return
+        if self.frames_received == 0:
+            rospy.loginfo(
+                "hole_detector_gui: first annotated frame received (%dx%d, encoding=%s)",
+                msg.width, msg.height, msg.encoding)
+        self.frames_received += 1
+        self.new_frame_signal.emit(cv_image)
 
-        # Pre-process image
-        display_img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB) # PyQt prefers RGB
-        blurred_img = cv2.medianBlur(cv_image, 5)
-
-        # ROI and Center Parameters
-        roi_top = 50    
-        roi_bottom = 590
-        img_width = 480
-        img_center_x = img_width // 2  # 240
-        center_window_px = 200          # Capture when cx is 40 to 440
-
-        # # Draw ROI boundaries (Vertical)
-        # cv2.line(display_img, (0, roi_top), (img_width, roi_top), (50, 50, 50), 1)
-        # cv2.line(display_img, (0, roi_bottom), (img_width, roi_bottom), (50, 50, 50), 1)
-        
-        # # Draw "Detection Window" (Horizontal Center)
-        # cv2.line(display_img, (img_center_x - center_window_px, 0), (img_center_x - center_window_px, 640), (255, 255, 0), 1, cv2.LINE_AA)
-        # cv2.line(display_img, (img_center_x + center_window_px, 0), (img_center_x + center_window_px, 640), (255, 255, 0), 1, cv2.LINE_AA)
-
-        # Hough Circles Detection
-        circles = cv2.HoughCircles(
-            blurred_img,
-            cv2.HOUGH_GRADIENT,
-            dp=2,
-            minDist=480, 
-            param1=100,
-            param2=25,
-            minRadius=104,
-            maxRadius=114
+    def hole_event_callback(self, msg):
+        self.new_hole_signal.emit(
+            int(msg.id),
+            float(msg.rel_time_s),
+            float(msg.abs_x_mm),
+            float(msg.radius_mm),
         )
 
-        if circles is not None:
-            circles = np.uint16(np.around(circles))
-            for i in circles[0, :]:
-                cx, cy, r = i[0], i[1], i[2]
-                
-                # 1. Vertical ROI Filter
-                if cy < roi_top or cy > roi_bottom: 
-                    continue
+    # --- Button handlers (Qt thread, called from the GUI) ---
 
-                # 2. Check if already tracked (Duplicate prevention)
-                abs_x = self.camera_abs_x
-                matched = False
-                matched_id = -1
-                for hole in self.holes:
-                    dist = abs(abs_x - hole['abs_x'])
-                    if dist < self.tracking_distance_threshold_mm:
-                        matched = True
-                        matched_id = hole['id']
-                        break
-                
-                # 3. Horizontal "Middle" Filter 
-                # We only register a NEW hole if it is within the center window
-                in_center_zone = abs(cx - img_center_x) < center_window_px
+    def reset_state(self):
+        """Clear the local table and ask both detector and encoder to reset."""
+        self.clear_table_signal.emit()
+        try:
+            rospy.ServiceProxy('/hole_detector/reset', Empty)()
+            rospy.loginfo("Reset hole_detector.")
+        except rospy.ServiceException as e:
+            rospy.logwarn("Failed to reset hole_detector: %s" % e)
+        try:
+            rospy.ServiceProxy('/encoder_publisher/reset', Empty)()
+            rospy.loginfo("Reset encoder_publisher.")
+        except rospy.ServiceException as e:
+            rospy.logwarn("Failed to reset encoder_publisher: %s" % e)
 
-                if not matched and in_center_zone:
-                    # New Hole Detected in the Center!
-                    self.hole_counter += 1
-                    current_ts = msg.header.stamp.to_sec()
-                    rel_time = current_ts - self.initial_timestamp if self.initial_timestamp else 0.0
-                    radius_mm = r * self.scale
-                    
-                    self.holes.append({
-                        'id': self.hole_counter,
-                        'abs_x': abs_x,
-                        'radius_mm': radius_mm
-                    })
-                    
-                    self.new_hole_signal.emit(self.hole_counter, rel_time, abs_x, radius_mm)
-                    rospy.loginfo(f"Hole {self.hole_counter} centered and registered at {abs_x:.2f}mm")
-                    matched_id = self.hole_counter
-                    self.latest_hole_id = self.hole_counter
-                    self._publish_markers()
+    def toggle_markers(self):
+        self.markers_visible = not self.markers_visible
+        try:
+            toggle_srv = rospy.ServiceProxy('/roller_controller/toggle_markers', SetBool)
+            toggle_srv(self.markers_visible)
+            rospy.loginfo("Toggled markers visible to: %s" % self.markers_visible)
+        except rospy.ServiceException as e:
+            rospy.logwarn("Failed to call toggle service: %s" % e)
 
-                # Visual Feedback
-                color = (0, 255, 0) if matched_id != -1 else (0, 165, 255) # Green if registered, Orange if seen but not centered
-                cv2.circle(display_img, (cx, cy), r, color, 2)
-                if matched_id != -1:
-                    cv2.putText(display_img, f"#{matched_id}", (cx - 15, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        self.new_frame_signal.emit(display_img)
-
-    def _make_hole_marker(self, hole, ns, marker_id, y_pos, color, thickness=0.001):
-        """Helper to create a cylinder marker for a hole."""
-        m = Marker()
-        m.header.frame_id = 'map'
-        m.header.stamp = rospy.Time.now()
-        m.ns = ns
-        m.id = marker_id
-        m.type = Marker.CYLINDER
-        m.action = Marker.ADD
-        m.pose.position.x = self.roller_start_x
-        m.pose.position.y = y_pos
-        m.pose.position.z = self.roller_start_z + hole['abs_x'] / 1000.0
-        # Rotate 90 deg around X so cylinder faces the flap surface
-        m.pose.orientation.x = 0.7071068
-        m.pose.orientation.w = 0.7071068
-        diameter_m = 2.0 * hole['radius_mm'] / 1000.0
-        m.scale.x = diameter_m
-        m.scale.y = diameter_m
-        m.scale.z = thickness
-        m.color = color
-        m.lifetime = rospy.Duration(0)
-        return m
-
-    def _delete_all_markers(self):
-        if self.marker_pub is None:
-            return
-        
-        marker_array = MarkerArray()
-        
-        m = Marker()
-        m.action = 3 # Marker.DELETEALL is 3
-        
-        marker_array.markers.append(m)
-        
-        self.marker_pub.publish(marker_array)
-
-    def _publish_markers(self):
-        """Publish RViz MarkerArray with markers for each detected hole."""
-        if self.marker_pub is None:
-            return
-
-        marker_array = MarkerArray()
-
-        for hole in self.holes:
-            is_latest = (hole['id'] == self.latest_hole_id)
-            
-            # Color
-            if is_latest:
-                color = ColorRGBA(1.0, 0.2, 0.0, 1.0)  # bright orange-red
-                thickness = 0.003
-            else:
-                color = ColorRGBA(0.0, 0.8, 0.2, 0.9)  # green
-                thickness = 0.001
-
-            # Surface marker (on the flap, y=-0.045)
-            m_surface = self._make_hole_marker(hole, 'holes_surface', hole['id'], self.surface_y, color, thickness)
-            marker_array.markers.append(m_surface)
-
-        self.marker_pub.publish(marker_array)
 
 class HoleGUI(QWidget):
     def __init__(self):
         super().__init__()
-        # Create thread BEFORE initUI so button connections inside initUI work
         self.ros_thread = ROSThread()
         self.initUI()
         self.ros_thread.new_frame_signal.connect(self.update_image)
         self.ros_thread.new_hole_signal.connect(self.add_hole_entry)
+        self.ros_thread.clear_table_signal.connect(self.clear_table)
         self.ros_thread.start()
 
     def initUI(self):
         self.setWindowTitle('Real-Time Hole Detection Monitor')
         self.setGeometry(100, 100, 900, 700)
-        
-        # Main layout
+
         layout = QHBoxLayout()
 
-        # Image view on Left
         self.image_label = QLabel(self)
         self.image_label.setFixedSize(480, 640)
         self.image_label.setStyleSheet("background-color: black;")
         layout.addWidget(self.image_label)
 
-        # Table and buttons on Right
         right_layout = QVBoxLayout()
-        
+
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["ID", "Time (s)", "Absolute X (mm)", "Radius (mm)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         right_layout.addWidget(self.table)
 
-        # Buttons layout
         btn_layout = QHBoxLayout()
-        
         self.toggle_btn = QPushButton("Toggle Roller")
         self.toggle_btn.clicked.connect(self.ros_thread.toggle_markers)
-        
         self.reset_btn = QPushButton("Reset Env / Roller")
         self.reset_btn.clicked.connect(self.ros_thread.reset_state)
-        
         btn_layout.addWidget(self.toggle_btn)
         btn_layout.addWidget(self.reset_btn)
-        
         right_layout.addLayout(btn_layout)
 
-        layout.addWidget(self.image_label)
         layout.addLayout(right_layout)
-
         self.setLayout(layout)
-        
-        # Connect clear table signal
-        self.ros_thread.clear_table_signal.connect(self.clear_table)
 
     @pyqtSlot()
     def clear_table(self):
@@ -332,27 +164,34 @@ class HoleGUI(QWidget):
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
-        rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
+        h, w, ch = cv_img.shape
         bytes_per_line = ch * w
-        q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        self.image_label.setPixmap(QPixmap.fromImage(q_img))
+        if _HAS_BGR888:
+            q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_BGR888)
+        else:
+            # PyQt5 5.12 lacks Format_BGR888; use Format_RGB888 + rgbSwapped()
+            # which performs the BGR<->RGB swap inside Qt.
+            q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        # Scale once to the label box so RViz-style preview always fits.
+        pix = QPixmap.fromImage(q_img)
+        if pix.size() != self.image_label.size():
+            pix = pix.scaled(self.image_label.size())
+        self.image_label.setPixmap(pix)
 
     @pyqtSlot(int, float, float, float)
     def add_hole_entry(self, h_id, rel_time, x_mm, r_mm):
         row_position = self.table.rowCount()
         self.table.insertRow(row_position)
         self.table.setItem(row_position, 0, QTableWidgetItem(str(h_id)))
-        self.table.setItem(row_position, 1, QTableWidgetItem(f"{rel_time:.2f}"))
-        self.table.setItem(row_position, 2, QTableWidgetItem(f"{x_mm:.2f}"))
-        self.table.setItem(row_position, 3, QTableWidgetItem(f"{r_mm:.2f}"))
-        
-        # Auto scroll to bottom
+        self.table.setItem(row_position, 1, QTableWidgetItem("%.2f" % rel_time))
+        self.table.setItem(row_position, 2, QTableWidgetItem("%.2f" % x_mm))
+        self.table.setItem(row_position, 3, QTableWidgetItem("%.2f" % r_mm))
         self.table.scrollToBottom()
 
     def closeEvent(self, event):
         rospy.signal_shutdown('GUI Closed')
         event.accept()
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
