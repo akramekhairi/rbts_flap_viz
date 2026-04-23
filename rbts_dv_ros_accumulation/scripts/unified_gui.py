@@ -73,9 +73,9 @@ BUTTON_RADIUS_PX = 10          # rounded corners for buttons
 IMAGE_RADIUS_PX = 12           # rounded corners around the image stream
 
 # --- Header font sizes (px). Bump these to enlarge the header text. ---------
-HEADER_TITLE_FONT_PX = 22      # main "Handheld Roller" title
+HEADER_TITLE_FONT_PX = 38      # main "Handheld Roller" title
 HEADER_TITLE_FONT_WEIGHT = 700 # 400=regular, 600=semi-bold, 700=bold, 800=extra-bold
-HEADER_SUBTITLE_FONT_PX = 13   # subtitle line under the title
+HEADER_SUBTITLE_FONT_PX = 23   # subtitle line under the title
 HEADER_TITLE_LETTER_SPACING = 0.6  # px
 
 # --- Image stream sizing. Native event-camera frame is 480 (W) x 640 (H);
