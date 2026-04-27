@@ -127,14 +127,15 @@ class RollerController:
 
     def pos_callback(self, msg):
         """Directly set roller position from encoder publisher.
-        
+
         Roller starts at configured start pose. Encoder distance maps to
-        translation along Z for up/down motion in RViz.
+        translation along map X: increasing /roller/position moves left (−X),
+        decreasing moves right (+X).
         """
         self.camera_abs_x_m = msg.data
-        self.x = self.start_x
+        self.x = self.start_x - self.camera_abs_x_m
         self.y = self.start_y
-        self.z = self.start_z + self.camera_abs_x_m
+        self.z = self.start_z
 
     def toggle_callback(self, req):
         """Service callback: data=True shows roller, data=False hides it."""

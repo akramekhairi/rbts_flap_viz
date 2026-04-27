@@ -86,6 +86,14 @@ IMAGE_NATIVE_W_PX = 480
 IMAGE_NATIVE_H_PX = 640
 IMAGE_SCALE_SNAPS = (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
 
+# --- Touch scroll navigation buttons. The tablet has no multi-touch so the
+# default scrollbars are awkward; thin vertical up/down buttons give a reliable
+# single-finger alternative. Buttons auto-repeat while held. --------------
+SCROLL_NAV_WIDTH_PX = 36
+SCROLL_NAV_STEP_LINES = 3          # click = this many single-line scroll steps
+SCROLL_NAV_REPEAT_MS = 60          # interval between repeats while held
+SCROLL_NAV_REPEAT_DELAY_MS = 300   # initial delay before auto-repeat kicks in
+
 
 STYLESHEET = """
 QWidget#root {{
@@ -173,6 +181,12 @@ QPushButton:pressed {{
     background-color: {mid};
     color: {card};
     border: 1px solid {mid};
+}}
+QPushButton#scrollNavBtn {{
+    padding: 0;
+    font-size: 18px;
+    font-weight: 700;
+    border-radius: 8px;
 }}
 QScrollArea {{
     border: none;
@@ -316,6 +330,11 @@ class ROSThread(QThread):
             rospy.loginfo("Reset encoder_publisher.")
         except rospy.ServiceException as exc:
             rospy.logwarn("Failed to reset encoder_publisher: %s" % exc)
+        try:
+            rospy.ServiceProxy("/synthetic_marker_publisher/reset", Empty)()
+            rospy.loginfo("Reset synthetic_marker_publisher.")
+        except rospy.ServiceException as exc:
+            rospy.logwarn("Failed to reset synthetic_marker_publisher: %s" % exc)
 
     def toggle_markers(self):
         self.markers_visible = not self.markers_visible
@@ -336,6 +355,9 @@ class UnifiedGUI(QWidget):
         self.logo_dir = logo_dir
         self.start_fullscreen = start_fullscreen
         self._latest_cv_img = None
+        # Encoder-absolute X of the first hole in this session; table shows
+        # (x - this) so distance is relative to hole #1 after each reset.
+        self._first_hole_abs_x_mm = None
         self.ros_thread = ROSThread()
         self._build_ui()
         self._install_shortcuts()
@@ -483,6 +505,51 @@ class UnifiedGUI(QWidget):
         shadow.setColor(QColor(53, 88, 114, 40))  # PALETTE['deep'] @ ~16% alpha
         widget.setGraphicsEffect(shadow)
 
+    def _wrap_with_scroll_nav(self, scrollable):
+        """Attach thin up/down arrow buttons to the right of a scrollable
+        widget (QScrollArea, QAbstractItemView, etc.).
+
+        Tablets in use here have no multi-touch so the default vertical
+        scrollbar is fiddly to drag. These buttons drive
+        ``scrollable.verticalScrollBar()`` by N single-line steps per click
+        and auto-repeat while held. Returns a QWidget container that should
+        replace the original ``scrollable`` in its parent layout.
+        """
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(scrollable, 1)
+
+        nav = QWidget()
+        nav_layout = QVBoxLayout(nav)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(4)
+        nav.setFixedWidth(SCROLL_NAV_WIDTH_PX)
+
+        up_btn = QPushButton("\u25B2")
+        down_btn = QPushButton("\u25BC")
+        for btn in (up_btn, down_btn):
+            btn.setObjectName("scrollNavBtn")
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            btn.setFixedWidth(SCROLL_NAV_WIDTH_PX)
+            btn.setAutoRepeat(True)
+            btn.setAutoRepeatDelay(SCROLL_NAV_REPEAT_DELAY_MS)
+            btn.setAutoRepeatInterval(SCROLL_NAV_REPEAT_MS)
+        nav_layout.addWidget(up_btn, 1)
+        nav_layout.addWidget(down_btn, 1)
+        row.addWidget(nav, 0)
+
+        bar = scrollable.verticalScrollBar()
+        up_btn.clicked.connect(
+            lambda _=False, b=bar: b.setValue(
+                b.value() - SCROLL_NAV_STEP_LINES * max(1, b.singleStep())))
+        down_btn.clicked.connect(
+            lambda _=False, b=bar: b.setValue(
+                b.value() + SCROLL_NAV_STEP_LINES * max(1, b.singleStep())))
+        return container
+
     def _build_right_panel(self):
         container = QWidget()
         container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -519,7 +586,10 @@ class UnifiedGUI(QWidget):
         scroll_layout.addStretch(1)
 
         scroll.setWidget(scroll_content)
-        outer.addWidget(scroll, 2)
+        # Single-touch friendly: thin up/down buttons to the right of the
+        # scrollable area scroll to the controls group without needing to
+        # drag the native scrollbar.
+        outer.addWidget(self._wrap_with_scroll_nav(scroll), 2)
         return container
 
     def _build_hole_table_group(self):
@@ -528,14 +598,16 @@ class UnifiedGUI(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Time (s)", "Absolute X (mm)", "Radius (mm)"]
+            ["ID", "Time (s)", "Distance (mm)", "Radius (mm)"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setMinimumHeight(220)
-        layout.addWidget(self.table)
+        # Touch-friendly vertical scroll buttons paired with the table. The
+        # tablet has no multi-touch so using the native scrollbar is awkward.
+        layout.addWidget(self._wrap_with_scroll_nav(self.table))
         return group
 
     def _build_controls_group(self):
@@ -554,6 +626,7 @@ class UnifiedGUI(QWidget):
 
     @pyqtSlot()
     def clear_table(self):
+        self._first_hole_abs_x_mm = None
         self.table.setRowCount(0)
 
     @pyqtSlot(np.ndarray)
@@ -600,11 +673,14 @@ class UnifiedGUI(QWidget):
 
     @pyqtSlot(int, float, float, float)
     def add_hole_entry(self, h_id, rel_time, x_mm, r_mm):
+        if self._first_hole_abs_x_mm is None:
+            self._first_hole_abs_x_mm = x_mm
+        dist_mm = x_mm - self._first_hole_abs_x_mm
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(str(h_id)))
         self.table.setItem(row, 1, QTableWidgetItem("%.2f" % rel_time))
-        self.table.setItem(row, 2, QTableWidgetItem("%.2f" % x_mm))
+        self.table.setItem(row, 2, QTableWidgetItem("%.2f" % dist_mm))
         self.table.setItem(row, 3, QTableWidgetItem("%.2f" % r_mm))
         self.table.scrollToBottom()
 

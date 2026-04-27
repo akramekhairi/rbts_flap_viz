@@ -545,9 +545,9 @@ private:
         m.id = static_cast<int>(h.id);
         m.type = visualization_msgs::Marker::CYLINDER;
         m.action = visualization_msgs::Marker::ADD;
-        m.pose.position.x = params_.roller_start_x_m;
+        m.pose.position.x = params_.roller_start_x_m - h.abs_x_mm / 1000.0;
         m.pose.position.y = params_.roller_start_y_m;
-        m.pose.position.z = params_.roller_start_z_m - h.abs_x_mm / 1000.0;
+        m.pose.position.z = params_.roller_start_z_m;
         m.pose.orientation.x = 0.7071068;
         m.pose.orientation.y = 0.0;
         m.pose.orientation.z = 0.0;

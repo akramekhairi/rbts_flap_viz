@@ -121,6 +121,7 @@ class ROSThread(QThread):
 class HoleGUI(QWidget):
     def __init__(self):
         super().__init__()
+        self._first_hole_abs_x_mm = None
         self.ros_thread = ROSThread()
         self.initUI()
         self.ros_thread.new_frame_signal.connect(self.update_image)
@@ -142,7 +143,8 @@ class HoleGUI(QWidget):
         right_layout = QVBoxLayout()
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["ID", "Time (s)", "Absolute X (mm)", "Radius (mm)"])
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Time (s)", "Distance from 1st (mm)", "Radius (mm)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         right_layout.addWidget(self.table)
 
@@ -160,6 +162,7 @@ class HoleGUI(QWidget):
 
     @pyqtSlot()
     def clear_table(self):
+        self._first_hole_abs_x_mm = None
         self.table.setRowCount(0)
 
     @pyqtSlot(np.ndarray)
@@ -180,11 +183,14 @@ class HoleGUI(QWidget):
 
     @pyqtSlot(int, float, float, float)
     def add_hole_entry(self, h_id, rel_time, x_mm, r_mm):
+        if self._first_hole_abs_x_mm is None:
+            self._first_hole_abs_x_mm = x_mm
+        dist_mm = x_mm - self._first_hole_abs_x_mm
         row_position = self.table.rowCount()
         self.table.insertRow(row_position)
         self.table.setItem(row_position, 0, QTableWidgetItem(str(h_id)))
         self.table.setItem(row_position, 1, QTableWidgetItem("%.2f" % rel_time))
-        self.table.setItem(row_position, 2, QTableWidgetItem("%.2f" % x_mm))
+        self.table.setItem(row_position, 2, QTableWidgetItem("%.2f" % dist_mm))
         self.table.setItem(row_position, 3, QTableWidgetItem("%.2f" % r_mm))
         self.table.scrollToBottom()
 

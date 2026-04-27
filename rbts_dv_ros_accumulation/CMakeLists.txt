@@ -76,5 +76,6 @@ target_link_libraries(hole_detector ${catkin_LIBRARIES} ${OpenCV_LIBS})
 catkin_install_python(PROGRAMS
   scripts/hole_detector_gui.py
   scripts/unified_gui.py
+  scripts/synthetic_marker_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

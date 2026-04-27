@@ -21,7 +21,10 @@
          source ~/handheld_rbts_ws/devel/setup.bash (with extend flag)
          roslaunch flap_roller_viz visualize.launch
   -->
-  <arg name="launch_capture" default="true"/>
+  <!-- Event camera: set enable_camera:=false (or launch_capture:=false) to skip
+       capture_node — e.g. replay bags or synthetic-only testing. -->
+  <arg name="enable_camera" default="true"/>
+  <arg name="launch_capture" default="$(arg enable_camera)"/>
   <arg name="capture_camera_name" default=""/>
   <!-- Time slice the capture node uses to batch events before publishing (us).
        Smaller = lower latency but more ROS message overhead. 1000us = 1ms is the upstream default. -->
@@ -63,10 +66,10 @@
     <param name="support_radius" value="0.02" />
     <param name="start_x" value="1.29" />
     <param name="start_y" value="-0.11" />
-    <param name="start_z" value="0.26" />
+    <param name="start_z" value="0.85" />
     <!-- Extra RPY in map frame after CAD mount (deg). Order: roll (map X), pitch (map Y), yaw (map Z). -->
     <param name="roll_extra_deg" value="0" />
-    <param name="pitch_extra_deg" value="0" />
+    <param name="pitch_extra_deg" value="-90" />
     <param name="yaw_extra_deg" value="0" />
   </node>
 
@@ -136,6 +139,31 @@
     <param name="roller_start_z" value="0.26" />
     <param name="marker_frame_id" value="map" />
   </node>
+
+  <!-- Synthetic marker publisher: drops a known/ground-truth pattern of hole
+       markers as the encoder advances past pre-sampled positions. Publishes
+       on /hole_markers (distinct ns + id offset so it does not collide with
+       hole_detector) and /hole_events so the unified_gui table picks it up.
+       Toggle with publish_synthetic_markers:=false on the roslaunch line. -->
+  <arg name="publish_synthetic_markers" default="true"/>
+  <group if="$(arg publish_synthetic_markers)">
+    <node pkg="rbts_dv_ros_accumulation" type="synthetic_marker_publisher.py"
+          name="synthetic_marker_publisher" output="screen"
+          launch-prefix="bash -c 'sleep 5; exec /usr/bin/python3 $0 $@'">
+      <param name="num_holes"             value="30"/>
+      <param name="start_offset_mm"       value="2.0"/>
+      <param name="start_offset_tol_mm"   value="0.4"/>
+      <param name="spacing_mm"            value="25.0"/>
+      <param name="spacing_tol_mm"        value="0.4"/>
+      <param name="diameter_mm"           value="9.70"/>
+      <param name="diameter_tol_mm"       value="0.3"/>
+      <param name="marker_frame_id"       value="map"/>
+      <param name="roller_start_x"        value="1.29"/>
+      <param name="roller_start_y"        value="-0.11"/>
+      <!-- Synthetic markers sit at the roller's Z so they float with it. -->
+      <param name="roller_start_z"        value="0.85"/>
+    </node>
+  </group>
 
   <!-- Unified GUI: embeds RViz + upscaled hole-detector image stream + scrollable
        hole list + controls + read-only detector params, all in one window.
