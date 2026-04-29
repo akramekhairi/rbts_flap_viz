@@ -1,16 +1,27 @@
 <?xml version="1.0"?>
 <launch>
-  <!-- Flap tuned static position relative to map -->
-  <arg name="flap_x" default="0.0"/>
-  <arg name="flap_y" default="0.0"/>
-  <arg name="flap_z" default="0.0"/>
-  <arg name="flap_roll" default="0.0"/>
-  <arg name="flap_pitch" default="0.0"/>
-  <arg name="flap_yaw" default="0.0"/>
+  <!-- Workpiece pose relative to map (origin by default).
+       Roll / pitch / yaw are in DEGREES for convenience. -->
+  <arg name="wkpiece_x"         default="0.0"/>
+  <arg name="wkpiece_y"         default="0.0"/>
+  <arg name="wkpiece_z"         default="0.0"/>
+  <arg name="wkpiece_roll_deg"  default="90.0"/>
+  <arg name="wkpiece_pitch_deg" default="0.0"/>
+  <arg name="wkpiece_yaw_deg"   default="0.0"/>
 
   <!-- Encoder serial config -->
   <arg name="serial_port" default="/dev/ttyUSB0"/>
   <arg name="baud_rate" default="9600"/>
+  <!-- 1 = normal direction, -1 = reversed encoder travel direction. -->
+  <arg name="encoder_direction" default="-1"/>
+  <arg name="launch_encoder" default="true"/>
+  <arg name="launch_roller_controller" default="true"/>
+
+  <!-- Nominal hole pitch (mm): hole_detector prefers the candidate circle whose
+       spacing from the last registered hole is closest to this value.
+       Post-inspection compares each gap against <expected_spacing_mm> +/- <spacing_tolerance_mm>. -->
+  <arg name="expected_spacing_mm" default="25.0"/>
+  <arg name="spacing_tolerance_mm" default="2.5"/>
 
   <!-- Event camera capture (dv_ros_capture) launched in-process so we do not
        need to run dv_ros_visualization's full launch from another terminal
@@ -34,15 +45,31 @@
   <arg name="capture_noise_filter_enabled" default="true"/>
   <arg name="capture_noise_ba_time_us" default="2000"/>
 
-  <!-- Load flap URDF -->
-  <param name="flap_description" textfile="$(find wing_flap)/urdf/wing_flap.urdf"/>
-  <node name="flap_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
-    <remap from="robot_description" to="flap_description"/>
-    <remap from="joint_states" to="flap/joint_states"/>
+  <!-- Optional live-scan bag recording. Default is OFF to keep the demo path
+       light on the Surface Pro 7. No compression is used by default to avoid
+       CPU spikes. -->
+  <arg name="record_bag" default="false"/>
+  <arg name="bag_mode" default="raw"/>
+  <arg name="bag_output_dir" default="$(env HOME)/rbts_bags"/>
+  <arg name="bag_prefix" default="roller"/>
+  <arg name="bag_split_size_mb" default="0"/>
+
+  <!-- Load workpiece URDF -->
+  <param name="wkpiece_description" textfile="$(find Assem1)/urdf/Assem1.urdf"/>
+  <node name="wkpiece_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="robot_description" to="wkpiece_description"/>
+    <remap from="joint_states" to="wkpiece/joint_states"/>
   </node>
 
-  <node name="flap_static_tf" pkg="tf2_ros" type="static_transform_publisher" 
-        args="$(arg flap_x) $(arg flap_y) $(arg flap_z) $(arg flap_yaw) $(arg flap_pitch) $(arg flap_roll) map flap_base_link"/>
+  <!-- Pre-compute radian equivalents so the args= line stays on one line
+       and $(eval ...) parentheses don't confuse the substitution parser. -->
+  <arg name="wkpiece_roll_rad"  default="$(eval arg('wkpiece_roll_deg')  * 3.14159265358979 / 180.0)"/>
+  <arg name="wkpiece_pitch_rad" default="$(eval arg('wkpiece_pitch_deg') * 3.14159265358979 / 180.0)"/>
+  <arg name="wkpiece_yaw_rad"   default="$(eval arg('wkpiece_yaw_deg')   * 3.14159265358979 / 180.0)"/>
+
+  <!-- Static TF: map → base_link. -->
+  <node name="wkpiece_static_tf" pkg="tf2_ros" type="static_transform_publisher"
+        args="$(arg wkpiece_x) $(arg wkpiece_y) $(arg wkpiece_z) $(arg wkpiece_yaw_rad) $(arg wkpiece_pitch_rad) $(arg wkpiece_roll_rad) map base_link"/>
 
   <!-- Load roller URDF -->
   <param name="roller_description" textfile="$(find roller_handheld)/urdf/roller_handheld.urdf"/>
@@ -51,27 +78,34 @@
   </node>
 
   <!-- Encoder Publisher: reads serial encoder data, publishes /tcp/vel and /roller/position -->
-  <node name="encoder_publisher" pkg="flap_roller_viz" type="encoder_publisher.py" output="screen"
-        launch-prefix="/usr/bin/python3">
-    <param name="serial_port" value="$(arg serial_port)" />
-    <param name="baud_rate" value="$(arg baud_rate)" />
-    <param name="cylinder_diameter_m" value="0.088" />
-  </node>
+  <group if="$(arg launch_encoder)">
+    <node name="encoder_publisher" pkg="flap_roller_viz" type="encoder_publisher.py" output="screen"
+          launch-prefix="/usr/bin/python3">
+      <param name="serial_port" value="$(arg serial_port)" />
+      <param name="baud_rate" value="$(arg baud_rate)" />
+      <param name="cylinder_diameter_m" value="0.088" />
+      <param name="encoder_direction" value="$(arg encoder_direction)" />
+    </node>
+  </group>
 
   <!-- Roller Controller: encoder-driven via /roller/position -->
   <!-- start_x = 2.40 m - 1.10 m = 1.30 m -->
-  <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
-        launch-prefix="/usr/bin/python3">
-    <param name="roller_radius" value="0.05" />
-    <param name="support_radius" value="0.02" />
-    <param name="start_x" value="1.29" />
-    <param name="start_y" value="-0.11" />
-    <param name="start_z" value="0.85" />
-    <!-- Extra RPY in map frame after CAD mount (deg). Order: roll (map X), pitch (map Y), yaw (map Z). -->
-    <param name="roll_extra_deg" value="0" />
-    <param name="pitch_extra_deg" value="-90" />
-    <param name="yaw_extra_deg" value="0" />
-  </node>
+  <group if="$(arg launch_roller_controller)">
+    <node name="roller_controller" pkg="flap_roller_viz" type="roller_controller.py" output="screen"
+          launch-prefix="/usr/bin/python3">
+      <param name="roller_radius" value="0.05" />
+      <param name="support_radius" value="0.02" />
+      <param name="start_x" value="-0.08" />
+      <param name="start_y" value="0.00" />
+      <param name="start_z" value="0.047" />
+      <!-- Extra RPY in map frame after CAD mount (deg). Order: roll (map X), pitch (map Y), yaw (map Z). -->
+      <param name="roll_extra_deg" value="-90" />
+      <param name="pitch_extra_deg" value="0" />
+      <param name="yaw_extra_deg" value="-90" />
+      <!-- Start hidden; GUI toggle button can show it via service. -->
+      <param name="markers_visible" value="false" />
+    </node>
+  </group>
 
   <!-- DV capture node: events-only, with background-activity noise filter.
        Disabling frames/imu/triggers cuts USB bandwidth and CPU substantially on
@@ -100,31 +134,35 @@
          produces overlapping (smoother) frames; stride == window disables
          sliding. -->
     <param name="window_size_ms" value="10" />
-    <param name="stride_ms"      value="0" />
+    <param name="stride_ms"      value="10" />
     <param name="contribution" value="0.45" />
     <param name="constant_depth" value="0.047" />
+    <!-- Sign applied to the incoming /tcp/vel before motion compensation.
+         Flip to 1.0 if the compensated image looks smeared in the wrong direction. -->
+    <param name="vel_sign"       value="-1.0" />
   </node>
 
   <!-- Hole Detector (C++): contour-based detection on /motion_compensator/image,
        publishes /hole_markers, /motion_compensator/annotated_image, /hole_events.
        Delayed 5s like the motion compensator so the image topic is up first. -->
+  <arg name="preset" default="balanced"/>
+  <arg name="detector_mode" default="hough_preproc"/>
+  <arg name="publish_debug_preprocessed" default="false"/>
+  <arg name="publish_debug_binary" default="false"/>
+  <rosparam command="load" file="$(find flap_roller_viz)/launch/presets/$(arg preset).yaml" ns="hole_detector"/>
   <node pkg="rbts_dv_ros_accumulation" type="hole_detector" name="hole_detector" output="screen"
         launch-prefix="bash -c 'sleep 5; exec $0 $@'">
     <param name="scale_mm_per_px" value="0.0422" />
-    <param name="tracking_distance_threshold_mm" value="18.5" />
-    <param name="roi_top" value="50" />
-    <param name="roi_bottom" value="590" />
-    <param name="center_window_px" value="200" />
-    <param name="min_radius_px" value="104" />
-    <param name="max_radius_px" value="114" />
+    <param name="tracking_distance_threshold_mm" value="24.0" />
+    <!-- Temporal persistence gate only (mm): a history sample matches a candidate
+         if positions differ by less than this. Which circle wins is ranked by
+         distance to expected_hole_spacing_mm (closest pitch to nominal wins). -->
     <param name="median_blur_ksize" value="5" />
-    <param name="use_otsu" value="true" />
-    <param name="threshold_value" value="80" />
-    <!-- Default to Hough: same algorithm/params as the original Python detector
-         (dp=2, param1=100, param2=25, minR=104, maxR=114). Set to false to use
-         the experimental contour ring detector. -->
-    <param name="use_hough" value="true" />
+    <!-- detector_mode: hough_preproc (primary), hough_raw (rollback), or contour (backup). -->
+    <param name="detector_mode" value="$(arg detector_mode)" />
     <param name="publish_annotated" value="true" />
+    <param name="publish_debug_preprocessed" value="$(arg publish_debug_preprocessed)" />
+    <param name="publish_debug_binary" value="$(arg publish_debug_binary)" />
     <!-- Off-center correction: project each detected circle to its
          center-equivalent world position. pixel_offset_sign flips the sign
          if the correction goes the wrong way; offset_min_vel_mmps gates the
@@ -134,9 +172,11 @@
     <param name="offset_min_vel_mmps" value="5.0" />
     <param name="history_seconds"     value="2.0" />
     <!-- Marker placement parameters: must mirror roller_controller's start pose. -->
-    <param name="roller_start_x" value="1.29" />
-    <param name="roller_start_y" value="-0.11" />
-    <param name="roller_start_z" value="0.26" />
+    <param name="roller_start_x" value="-0.14" />
+    <param name="roller_start_y" value="0.00" />
+    <param name="roller_start_z" value="0.0" />
+    <!-- Must match unified_gui ~/expected_spacing_mm (nominal gap for tracker + analysis). -->
+    <param name="expected_hole_spacing_mm" value="$(arg expected_spacing_mm)"/>
     <param name="marker_frame_id" value="map" />
   </node>
 
@@ -145,7 +185,7 @@
        on /hole_markers (distinct ns + id offset so it does not collide with
        hole_detector) and /hole_events so the unified_gui table picks it up.
        Toggle with publish_synthetic_markers:=false on the roslaunch line. -->
-  <arg name="publish_synthetic_markers" default="true"/>
+  <arg name="publish_synthetic_markers" default="false"/>
   <group if="$(arg publish_synthetic_markers)">
     <node pkg="rbts_dv_ros_accumulation" type="synthetic_marker_publisher.py"
           name="synthetic_marker_publisher" output="screen"
@@ -158,10 +198,10 @@
       <param name="diameter_mm"           value="9.70"/>
       <param name="diameter_tol_mm"       value="0.3"/>
       <param name="marker_frame_id"       value="map"/>
-      <param name="roller_start_x"        value="1.29"/>
-      <param name="roller_start_y"        value="-0.11"/>
-      <!-- Synthetic markers sit at the roller's Z so they float with it. -->
-      <param name="roller_start_z"        value="0.85"/>
+      <param name="roller_start_x"        value="-0.14"/>
+      <param name="roller_start_y"        value="0.00"/>
+      <!-- Synthetic markers sit at the workpiece top surface (map Z = 0.0). -->
+      <param name="roller_start_z"        value="0.0"/>
     </node>
   </group>
 
@@ -171,11 +211,84 @@
        Delayed 1s so TF and topics are up before the embedded RViz initialises.
        Pass fullscreen:=true on the roslaunch command line for true fullscreen
        at startup (or press F11 inside the window to toggle, Esc to exit). -->
-  <arg name="fullscreen" default="false"/>
+  <arg name="fullscreen" default="true"/>
+  <!-- Post-inspection uses expected_spacing_mm and spacing_tolerance_mm (declared near top). -->
   <node name="unified_gui" pkg="rbts_dv_ros_accumulation" type="unified_gui.py" output="screen"
         launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'">
     <param name="rviz_config" value="$(find flap_roller_viz)/launch/config.rviz"/>
     <param name="logo_dir" value="$(find flap_roller_viz)/../images"/>
     <param name="fullscreen" value="$(arg fullscreen)"/>
+    <param name="expected_spacing_mm" value="$(arg expected_spacing_mm)"/>
+    <param name="spacing_tolerance_mm" value="$(arg spacing_tolerance_mm)"/>
   </node>
+
+  <!-- Lean tuning bag: raw inputs needed to replay motion compensation and detection. -->
+  <group if="$(eval arg('record_bag') and arg('bag_mode') == 'raw' and int(arg('bag_split_size_mb')) &lt;= 0)">
+    <node pkg="rosbag" type="record" name="bag_recorder" output="screen"
+          launch-prefix="bash -c 'mkdir -p &quot;$(arg bag_output_dir)&quot;; exec &quot;$@&quot;' _"
+          args="-o $(arg bag_output_dir)/$(arg bag_prefix)
+                /capture_node/events
+                /tcp/vel
+                /roller/position
+                /roller/position_stamped
+                /tf
+                /tf_static
+                /flap/joint_states
+                /joint_states"/>
+  </group>
+  <group if="$(eval arg('record_bag') and arg('bag_mode') == 'raw' and int(arg('bag_split_size_mb')) &gt; 0)">
+    <node pkg="rosbag" type="record" name="bag_recorder" output="screen"
+          launch-prefix="bash -c 'mkdir -p &quot;$(arg bag_output_dir)&quot;; exec &quot;$@&quot;' _"
+          args="--split --size=$(arg bag_split_size_mb)
+                -o $(arg bag_output_dir)/$(arg bag_prefix)
+                /capture_node/events
+                /tcp/vel
+                /roller/position
+                /roller/position_stamped
+                /tf
+                /tf_static
+                /flap/joint_states
+                /joint_states"/>
+  </group>
+
+  <!-- Full debug bag: raw inputs plus detector outputs and optional debug images. -->
+  <group if="$(eval arg('record_bag') and arg('bag_mode') == 'debug' and int(arg('bag_split_size_mb')) &lt;= 0)">
+    <node pkg="rosbag" type="record" name="bag_recorder" output="screen"
+          launch-prefix="bash -c 'mkdir -p &quot;$(arg bag_output_dir)&quot;; exec &quot;$@&quot;' _"
+          args="-o $(arg bag_output_dir)/$(arg bag_prefix)
+                /capture_node/events
+                /tcp/vel
+                /roller/position
+                /roller/position_stamped
+                /tf
+                /tf_static
+                /flap/joint_states
+                /joint_states
+                /motion_compensator/image
+                /motion_compensator/annotated_image
+                /hole_events
+                /hole_markers
+                /hole_detector/debug/preprocessed
+                /hole_detector/debug/binary"/>
+  </group>
+  <group if="$(eval arg('record_bag') and arg('bag_mode') == 'debug' and int(arg('bag_split_size_mb')) &gt; 0)">
+    <node pkg="rosbag" type="record" name="bag_recorder" output="screen"
+          launch-prefix="bash -c 'mkdir -p &quot;$(arg bag_output_dir)&quot;; exec &quot;$@&quot;' _"
+          args="--split --size=$(arg bag_split_size_mb)
+                -o $(arg bag_output_dir)/$(arg bag_prefix)
+                /capture_node/events
+                /tcp/vel
+                /roller/position
+                /roller/position_stamped
+                /tf
+                /tf_static
+                /flap/joint_states
+                /joint_states
+                /motion_compensator/image
+                /motion_compensator/annotated_image
+                /hole_events
+                /hole_markers
+                /hole_detector/debug/preprocessed
+                /hole_detector/debug/binary"/>
+  </group>
 </launch>

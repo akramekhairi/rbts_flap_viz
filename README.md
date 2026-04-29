@@ -97,6 +97,51 @@ You can customize the initial flap position in RViz via launch arguments:
 roslaunch flap_roller_viz visualize.launch flap_x:=0.0 flap_y:=0.0 flap_z:=0.0
 ```
 
+### Recording and replaying demo bags
+
+The main live path is still `visualize.launch` with embedded RViz/unified GUI.
+Motion compensation is configured for the demo milestone as `window_size_ms=10`
+and `stride_ms=5`.
+
+Record a lean tuning bag during a live scan:
+```bash
+roslaunch flap_roller_viz visualize.launch \
+  record_bag:=true bag_mode:=raw \
+  bag_output_dir:=$HOME/rbts_bags bag_prefix:=monday_baseline
+```
+
+The lean bag records:
+`/capture_node/events`, `/tcp/vel`, `/roller/position`,
+`/roller/position_stamped`, `/tf`, `/tf_static`, `/flap/joint_states`, and
+`/joint_states`.
+
+For a fuller debug bag, use `bag_mode:=debug`; it also records
+`/motion_compensator/image`, `/motion_compensator/annotated_image`,
+`/hole_events`, `/hole_markers`, `/hole_detector/debug/preprocessed`, and
+`/hole_detector/debug/binary`. Bags are recorded without compression to avoid
+CPU spikes on the Surface Pro 7. Optional splitting is available with
+`bag_split_size_mb:=1024`.
+
+Replay a bag while re-running motion compensation, detection, and the unified
+GUI:
+```bash
+roslaunch flap_roller_viz replay.launch \
+  bag:=$HOME/rbts_bags/monday_baseline_2026-04-27-17-45-00.bag \
+  rate:=1.0
+```
+
+Detector presets are selected with `preset:=balanced`, `preset:=conservative`,
+or `preset:=aggressive`. The emergency rollback to the previous raw Hough path
+is:
+```bash
+roslaunch flap_roller_viz visualize.launch detector_mode:=hough_raw
+```
+
+During replay or live scans, tune Hough/preprocessing parameters with:
+```bash
+rosrun rqt_reconfigure rqt_reconfigure
+```
+
 ### What to expect
 
 1. **RViz** opens showing the wing flap and roller models

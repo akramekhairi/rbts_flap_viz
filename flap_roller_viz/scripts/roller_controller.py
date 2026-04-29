@@ -87,7 +87,9 @@ class RollerController:
 
         # Position state
         self.camera_abs_x_m = 0.0  # Absolute distance travelled in meters
-        self.markers_visible = True  # Toggle state for marker visibility
+        self.markers_visible = rospy.get_param(
+            '~markers_visible', False
+        )  # Toggle state for roller visibility
 
         # Current roller pose
         self.x = self.start_x
@@ -124,6 +126,7 @@ class RollerController:
         self.timer = rospy.Timer(rospy.Duration(0.02), self.publish_state)
         rospy.loginfo("Roller Controller initialized. Subscribing to /roller/position for encoder-driven motion.")
         rospy.loginfo("Use service ~toggle_markers (SetBool) to show/hide roller.")
+        rospy.loginfo("Initial roller visibility: %s", self.markers_visible)
 
     def pos_callback(self, msg):
         """Directly set roller position from encoder publisher.

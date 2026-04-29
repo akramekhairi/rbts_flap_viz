@@ -198,6 +198,7 @@ class SyntheticMarkerPublisher:
         ev.abs_x_mm = rel_mm
         ev.radius_mm = mk['radius_mm']
         ev.rel_time_s = (stamp - self.start_time).to_sec() if self.start_time else 0.0
+        ev.rel_x_mm = rel_mm
         self.event_pub.publish(ev)
         rospy.loginfo(
             "Synthetic marker %d: distance from 1st %.2f mm (diameter %.2f mm)",
@@ -211,10 +212,10 @@ class SyntheticMarkerPublisher:
                 continue
             color = ColorRGBA()
             if mk['id'] == latest_id:
-                color.r, color.g, color.b, color.a = 0.0, 0.4, 1.0, 1.0
+                color.r, color.g, color.b, color.a = 0.0, 0.0, 0.0, 1.0
                 thickness = self.marker_thickness_m
             else:
-                color.r, color.g, color.b, color.a = 0.1, 0.2, 0.9, 0.9
+                color.r, color.g, color.b, color.a = 0.0, 0.0, 0.0, 0.9
                 thickness = self.marker_thickness_m / 3.0
             arr.markers.append(self._make_marker(mk, color, thickness))
         self.marker_pub.publish(arr)
@@ -232,11 +233,10 @@ class SyntheticMarkerPublisher:
         m.pose.position.x = self.roller_start_x_m - mk['abs_x_mm'] / 1000.0
         m.pose.position.y = self.roller_start_y_m
         m.pose.position.z = self.roller_start_z_m
-        # Same orientation as hole_detector cylinders so they lie on the panel.
-        m.pose.orientation.x = 0.7071068
+        m.pose.orientation.x = 0.0
         m.pose.orientation.y = 0.0
         m.pose.orientation.z = 0.0
-        m.pose.orientation.w = 0.7071068
+        m.pose.orientation.w = 1.0
         diameter_m = 2.0 * mk['radius_mm'] / 1000.0
         m.scale.x = diameter_m
         m.scale.y = diameter_m

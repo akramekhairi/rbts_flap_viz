@@ -12,12 +12,13 @@ WS_DIR="$(dirname $(dirname "$SCRIPT_DIR"))"
 echo "Detected workspace root: $WS_DIR"
 
 echo ""
-echo "[1/4] Installing System Dependencies (ROS, Python, GCC-13)..."
+echo "[1/5] Installing System Dependencies (ROS, Python, GCC-13)..."
 sudo apt update
 sudo apt install -y ros-noetic-desktop-full \
     ros-noetic-robot-state-publisher ros-noetic-tf2-ros ros-noetic-rviz \
     ros-noetic-cv-bridge ros-noetic-image-transport ros-noetic-dynamic-reconfigure ros-noetic-visualization-msgs \
-    python3-pyqt5 python3-opencv python3-pip python3-rospkg python3-rospy python3-serial
+    ros-noetic-rqt-reconfigure python3-pyqt5 python3-opencv python3-pip python3-rospkg python3-rospy python3-serial \
+    software-properties-common
 
 # Add repository for GCC 13 needed by modern dv-processing
 sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
@@ -25,14 +26,14 @@ sudo apt update
 sudo apt install -y gcc-13 g++-13
 
 echo ""
-echo "[2/4] Installing dv-processing..."
+echo "[2/5] Installing dv-processing..."
 # Add iniVation repository
 sudo add-apt-repository ppa:inivation-ppa/inivation -y
 sudo apt update
 sudo apt install -y dv-processing
 
 echo ""
-echo "[3/4] Setting up Repository Dependencies..."
+echo "[3/5] Setting up Repository Dependencies..."
 cd "$WS_DIR/src"
 
 if [ ! -d "dv-ros" ]; then
@@ -43,12 +44,22 @@ else
 fi
 
 echo "Ignoring conflicting dv-ros modules..."
-for pkg in dv_ros_aedat4 dv_ros_capture dv_ros_imu_bias dv_ros_tracker dv_ros_visualization dv_ros_runtime_modules dv_ros_accumulation; do
-    touch "dv-ros/$pkg/CATKIN_IGNORE"
+for pkg in dv_ros_aedat4 dv_ros_imu_bias dv_ros_tracker dv_ros_visualization dv_ros_runtime_modules dv_ros_accumulation; do
+    if [ -d "dv-ros/$pkg" ]; then
+        touch "dv-ros/$pkg/CATKIN_IGNORE"
+    fi
 done
 
 echo ""
-echo "[4/4] Building Workspace with GCC-13..."
+echo "[4/5] Resolving ROS package dependencies with rosdep..."
+cd "$WS_DIR"
+source /opt/ros/noetic/setup.bash
+sudo rosdep init 2>/dev/null || true
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+
+echo ""
+echo "[5/5] Building Workspace with GCC-13..."
 cd "$WS_DIR"
 source /opt/ros/noetic/setup.bash
 

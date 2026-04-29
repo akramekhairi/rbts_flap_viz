@@ -47,6 +47,7 @@ private:
     float constant_depth_ = 0.047f;
     int window_size_ms_ = 10;
     int stride_ms_ = 5;
+    float vel_sign_ = -1.0f;  // negate to flip compensation direction
 
     // Rolling event buffer. Each stride tick appends the new slice and
     // trims to the last window_size_ms_ of events.
@@ -65,6 +66,7 @@ public:
         nh_.param("constant_depth", constant_depth_, 0.047f);
         nh_.param("window_size_ms", window_size_ms_, 10);
         nh_.param("stride_ms", stride_ms_, 5);
+        nh_.param("vel_sign", vel_sign_, vel_sign_);
         if (window_size_ms_ < 1) {
             window_size_ms_ = 1;
         }
@@ -106,9 +108,7 @@ public:
 private:
     void velCallback(const geometry_msgs::TwistStamped::ConstPtr& msg) {
         std::lock_guard<std::mutex> lock(vel_mutex_);
-        // Downstream positive = forward optical Y (robot X) — sign already
-        // baked into the encoder publisher's twist output.
-        current_vel_x_ = 1.0f * msg->twist.linear.x;
+        current_vel_x_ = vel_sign_ * static_cast<float>(msg->twist.linear.x);
     }
 
     void ensureCameraGeometry() {

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="bag"/>
+  <arg name="rate" default="1.0"/>
+  <arg name="start" default="0.0"/>
+  <arg name="fullscreen" default="false"/>
+  <arg name="replay_topics"
+       default="/capture_node/events /tcp/vel /roller/position /roller/position_stamped /tf /tf_static /flap/joint_states /joint_states"/>
+
+  <param name="/use_sim_time" value="true"/>
+
+  <include file="$(find flap_roller_viz)/launch/visualize.launch">
+    <arg name="launch_capture" value="false"/>
+    <arg name="launch_encoder" value="false"/>
+    <arg name="launch_roller_controller" value="false"/>
+    <arg name="publish_synthetic_markers" value="false"/>
+    <arg name="record_bag" value="false"/>
+    <arg name="fullscreen" value="$(arg fullscreen)"/>
+  </include>
+
+  <node pkg="rosbag" type="play" name="bag_player" output="screen"
+        args="--clock -r $(arg rate) -s $(arg start) $(arg bag) --topics $(arg replay_topics)"/>
+</launch>

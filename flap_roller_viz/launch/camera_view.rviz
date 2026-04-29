@@ -5,7 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded: ~
       Splitter Ratio: 0.5
-    Tree Height: 396
+    Tree Height: 228
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -120,7 +120,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 1.342749834060669
+      Distance: 0.9125019907951355
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -128,25 +128,25 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 1.2444467544555664
-        Y: -0.08937728404998779
-        Z: 0.5279729962348938
+        X: -0.0067359101958572865
+        Y: 0.04103550314903259
+        Z: 0.14861543476581573
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -0.07499996572732925
+      Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
-      Yaw: 4.7050042152404785
+      Yaw: 4.710003852844238
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: true
-  Height: 1696
+  Height: 726
   Hide Left Dock: true
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001f700000284fc0200000001fb000000100044006900730070006c006100790073000000006e000002840000018200ffffff00000a200000060400000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
-  Width: 2592
-  X: 144
-  Y: 54
+  QMainWindow State: 000000ff00000000fd0000000100000000000001f700000284fc0200000001fb000000100044006900730070006c006100790073000000006e000002840000010e00ffffff00000365000002af00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730000000000ffffffff0000000000000000
+  Width: 869
+  X: 7
+  Y: 7

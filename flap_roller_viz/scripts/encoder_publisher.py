@@ -26,6 +26,10 @@ class EncoderPublisher:
         serial_port = rospy.get_param('~serial_port', '/dev/ttyUSB0')
         baud_rate = rospy.get_param('~baud_rate', 9600)
         cylinder_diameter_m = rospy.get_param('~cylinder_diameter_m', 0.088)
+        # 1 = normal direction, -1 = reverse. Any positive value maps to +1,
+        # any negative value maps to -1.
+        raw_dir = float(rospy.get_param('~encoder_direction', -1))
+        self.direction = -1.0 if raw_dir < 0 else 1.0
 
         self.roller_radius_m = cylinder_diameter_m / 2.0  # 0.044 m
 
@@ -88,8 +92,10 @@ class EncoderPublisher:
         total_angle_deg = turns * 360.0 + angle_deg
         total_angle_rad = total_angle_deg * math.pi / 180.0
 
-        # Linear position: arc length = radius * angle
-        raw_position_m = total_angle_rad * self.roller_radius_m
+        # Linear position: arc length = radius * angle.
+        # Multiply by direction so that setting encoder_direction:=-1 reverses
+        # positive travel without touching anything downstream.
+        raw_position_m = total_angle_rad * self.roller_radius_m * self.direction
         self.last_raw_position_m = raw_position_m
 
         # Apply zero-offset

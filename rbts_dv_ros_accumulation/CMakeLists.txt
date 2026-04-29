@@ -15,7 +15,7 @@ find_package(
              dynamic_reconfigure
              message_generation)
 
-generate_dynamic_reconfigure_options(cfg/Accumulator.cfg cfg/EdgeMap.cfg)
+generate_dynamic_reconfigure_options(cfg/Accumulator.cfg cfg/EdgeMap.cfg cfg/HoleDetector.cfg)
 
 add_message_files(
   FILES
@@ -69,6 +69,7 @@ add_executable(hole_detector src/hole_detector.cpp)
 
 add_dependencies(hole_detector ${catkin_EXPORTED_TARGETS}
                  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+                 ${PROJECT_NAME}_gencfg
                  ${PROJECT_NAME}_generate_messages_cpp)
 
 target_link_libraries(hole_detector ${catkin_LIBRARIES} ${OpenCV_LIBS})
