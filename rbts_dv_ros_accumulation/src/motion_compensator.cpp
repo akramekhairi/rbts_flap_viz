@@ -115,16 +115,16 @@ private:
         if (camera_) {
             return;
         }
-        // Hardcoded camera geometry from the original calibration.
-        const float fx = 1006.07834551f;
-        const float fy = 1002.65584344f;
-        const float cx = 328.27997605f;
-        const float cy = 249.15905858f;
+        // Hardcoded camera geometry (mean reprojection error ~0.975 px).
+        const float fx = 488.79659221f;
+        const float fy = 488.14627651f;
+        const float cx = 311.60393579f;
+        const float cy = 219.6244568f;
         const cv::Size resolution(640, 480);
         const std::vector<float> dist_coeffs = {
-            -0.5212024031184511f, -1.6230690455084205f,
-            -0.020112208777664516f, -0.003298750362896862f,
-            12.835326218458155f};
+            -0.33230384f, 0.08990672f,
+            0.00155497f, 0.00146961f,
+            0.01195913f};
 
         camera_ = std::make_shared<dv::camera::CameraGeometry>(
             dist_coeffs, fx, fy, cx, cy, resolution, dv::camera::DistortionModel::RADIAL_TANGENTIAL

@@ -10,7 +10,7 @@
   <arg name="wkpiece_yaw_deg"   default="0.0"/>
 
   <!-- Encoder serial config -->
-  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="serial_port" default="/dev/ttyACM0"/>
   <arg name="baud_rate" default="9600"/>
   <!-- 1 = normal direction, -1 = reversed encoder travel direction. -->
   <arg name="encoder_direction" default="-1"/>
@@ -23,15 +23,19 @@
   <arg name="expected_spacing_mm" default="25.0"/>
   <arg name="spacing_tolerance_mm" default="2.5"/>
 
+  <!-- Recorded-run replay: replays a previously saved detection run (holes +
+       continuous frames) from disk using the encoder to drive playback.
+       When true, the motion_compensator and hole_detector are NOT launched
+       because the recorded_run_publisher supplies their outputs. -->
+  <arg name="replay_recorded_run" default="false"/>
+  <arg name="recorded_run_dir" default=""/>
+  <arg name="replay_mode" default="encoder"/>
+  <arg name="time_delay_s" default="4.0"/>
+  <arg name="playback_duration_s" default="10.0"/>
+
   <!-- Event camera capture (dv_ros_capture) launched in-process so we do not
        need to run dv_ros_visualization's full launch from another terminal
-       (which adds its own accumulator + GUI + RViz competing for CPU/USB).
-       NOTE: source ~/dv_ws/devel/setup.bash *before* this workspace's
-       setup.bash so roslaunch can find the dv_ros_capture package. Example:
-         source ~/dv_ws/devel/setup.bash
-         source ~/handheld_rbts_ws/devel/setup.bash (with extend flag)
-         roslaunch flap_roller_viz visualize.launch
-  -->
+       (which adds its own accumulator + GUI + RViz competing for CPU/USB). -->
   <!-- Event camera: set enable_camera:=false (or launch_capture:=false) to skip
        capture_node — e.g. replay bags or synthetic-only testing. -->
   <arg name="enable_camera" default="true"/>
@@ -125,60 +129,66 @@
     </node>
   </group>
 
-  <!-- Motion Compensator (delayed 5s to let RViz and TF settle) -->
-  <node pkg="rbts_dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
-        launch-prefix="bash -c 'sleep 5; exec $0 $@'">
-    <remap from="/motion_compensator/events" to="/capture_node/events" />
-    <!-- Sliding-window frame generation. Each tick at `stride_ms` renders a
-         frame from the last `window_size_ms` of events. stride < window
-         produces overlapping (smoother) frames; stride == window disables
-         sliding. -->
-    <param name="window_size_ms" value="10" />
-    <param name="stride_ms"      value="10" />
-    <param name="contribution" value="0.45" />
-    <param name="constant_depth" value="0.047" />
-    <!-- Sign applied to the incoming /tcp/vel before motion compensation.
-         Flip to 1.0 if the compensated image looks smeared in the wrong direction. -->
-    <param name="vel_sign"       value="-1.0" />
-  </node>
+  <!-- Motion Compensator (delayed 5s to let RViz and TF settle).
+       Disabled when replaying a recorded run. -->
+  <group unless="$(arg replay_recorded_run)">
+    <node pkg="rbts_dv_ros_accumulation" type="motion_compensator" name="motion_compensator" output="screen"
+          launch-prefix="bash -c 'sleep 5; exec $0 $@'">
+      <remap from="/motion_compensator/events" to="/capture_node/events" />
+      <!-- Sliding-window frame generation. Each tick at `stride_ms` renders a
+           frame from the last `window_size_ms` of events. stride < window
+           produces overlapping (smoother) frames; stride == window disables
+           sliding. -->
+      <param name="window_size_ms" value="10" />
+      <param name="stride_ms"      value="10" />
+      <param name="contribution" value="0.45" />
+      <param name="constant_depth" value="0.047" />
+      <!-- Sign applied to the incoming /tcp/vel before motion compensation.
+           Flip to 1.0 if the compensated image looks smeared in the wrong direction. -->
+      <param name="vel_sign"       value="-1.0" />
+    </node>
+  </group>
 
   <!-- Hole Detector (C++): contour-based detection on /motion_compensator/image,
        publishes /hole_markers, /motion_compensator/annotated_image, /hole_events.
-       Delayed 5s like the motion compensator so the image topic is up first. -->
+       Delayed 5s like the motion compensator so the image topic is up first.
+       Disabled when replaying a recorded run. -->
   <arg name="preset" default="balanced"/>
   <arg name="detector_mode" default="hough_preproc"/>
   <arg name="publish_debug_preprocessed" default="false"/>
   <arg name="publish_debug_binary" default="false"/>
-  <rosparam command="load" file="$(find flap_roller_viz)/launch/presets/$(arg preset).yaml" ns="hole_detector"/>
-  <node pkg="rbts_dv_ros_accumulation" type="hole_detector" name="hole_detector" output="screen"
-        launch-prefix="bash -c 'sleep 5; exec $0 $@'">
-    <param name="scale_mm_per_px" value="0.0422" />
-    <param name="tracking_distance_threshold_mm" value="24.0" />
-    <!-- Temporal persistence gate only (mm): a history sample matches a candidate
-         if positions differ by less than this. Which circle wins is ranked by
-         distance to expected_hole_spacing_mm (closest pitch to nominal wins). -->
-    <param name="median_blur_ksize" value="5" />
-    <!-- detector_mode: hough_preproc (primary), hough_raw (rollback), or contour (backup). -->
-    <param name="detector_mode" value="$(arg detector_mode)" />
-    <param name="publish_annotated" value="true" />
-    <param name="publish_debug_preprocessed" value="$(arg publish_debug_preprocessed)" />
-    <param name="publish_debug_binary" value="$(arg publish_debug_binary)" />
-    <!-- Off-center correction: project each detected circle to its
-         center-equivalent world position. pixel_offset_sign flips the sign
-         if the correction goes the wrong way; offset_min_vel_mmps gates the
-         velocity-based time shift vs scale-only fallback; history_seconds
-         sizes the stamped encoder/velocity lookup buffers. -->
-    <param name="pixel_offset_sign"   value="1.0" />
-    <param name="offset_min_vel_mmps" value="5.0" />
-    <param name="history_seconds"     value="2.0" />
-    <!-- Marker placement parameters: must mirror roller_controller's start pose. -->
-    <param name="roller_start_x" value="-0.14" />
-    <param name="roller_start_y" value="0.00" />
-    <param name="roller_start_z" value="0.0" />
-    <!-- Must match unified_gui ~/expected_spacing_mm (nominal gap for tracker + analysis). -->
-    <param name="expected_hole_spacing_mm" value="$(arg expected_spacing_mm)"/>
-    <param name="marker_frame_id" value="map" />
-  </node>
+  <group unless="$(arg replay_recorded_run)">
+    <rosparam command="load" file="$(find flap_roller_viz)/launch/presets/$(arg preset).yaml" ns="hole_detector"/>
+    <node pkg="rbts_dv_ros_accumulation" type="hole_detector" name="hole_detector" output="screen"
+          launch-prefix="bash -c 'sleep 5; exec $0 $@'">
+      <param name="scale_mm_per_px" value="0.0422" />
+      <param name="tracking_distance_threshold_mm" value="24.0" />
+      <!-- Temporal persistence gate only (mm): a history sample matches a candidate
+           if positions differ by less than this. Which circle wins is ranked by
+           distance to expected_hole_spacing_mm (closest pitch to nominal wins). -->
+      <param name="median_blur_ksize" value="5" />
+      <!-- detector_mode: hough_preproc (primary), hough_raw (rollback), or contour (backup). -->
+      <param name="detector_mode" value="$(arg detector_mode)" />
+      <param name="publish_annotated" value="true" />
+      <param name="publish_debug_preprocessed" value="$(arg publish_debug_preprocessed)" />
+      <param name="publish_debug_binary" value="$(arg publish_debug_binary)" />
+      <!-- Off-center correction: project each detected circle to its
+           center-equivalent world position. pixel_offset_sign flips the sign
+           if the correction goes the wrong way; offset_min_vel_mmps gates the
+           velocity-based time shift vs scale-only fallback; history_seconds
+           sizes the stamped encoder/velocity lookup buffers. -->
+      <param name="pixel_offset_sign"   value="1.0" />
+      <param name="offset_min_vel_mmps" value="5.0" />
+      <param name="history_seconds"     value="2.0" />
+      <!-- Marker placement parameters: must mirror roller_controller's start pose. -->
+      <param name="roller_start_x" value="-0.14" />
+      <param name="roller_start_y" value="0.00" />
+      <param name="roller_start_z" value="0.0" />
+      <!-- Must match unified_gui ~/expected_spacing_mm (nominal gap for tracker + analysis). -->
+      <param name="expected_hole_spacing_mm" value="$(arg expected_spacing_mm)"/>
+      <param name="marker_frame_id" value="map" />
+    </node>
+  </group>
 
   <!-- Synthetic marker publisher: drops a known/ground-truth pattern of hole
        markers as the encoder advances past pre-sampled positions. Publishes
@@ -198,10 +208,29 @@
       <param name="diameter_mm"           value="9.70"/>
       <param name="diameter_tol_mm"       value="0.3"/>
       <param name="marker_frame_id"       value="map"/>
-      <param name="roller_start_x"        value="-0.14"/>
+      <param name="roller_start_x"        value="-0.08"/>
       <param name="roller_start_y"        value="0.00"/>
       <!-- Synthetic markers sit at the workpiece top surface (map Z = 0.0). -->
-      <param name="roller_start_z"        value="0.0"/>
+      <param name="roller_start_z"        value="0.047"/>
+    </node>
+  </group>
+
+  <!-- Recorded-run replay publisher: replays a previously saved detection run.
+       Loads hole positions + continuous frames from disk and publishes them as
+       the encoder advances, giving the same visual experience as live detection.
+       Publishes on the same topics as hole_detector + motion_compensator. -->
+  <group if="$(arg replay_recorded_run)">
+    <node pkg="rbts_dv_ros_accumulation" type="recorded_run_publisher.py"
+          name="recorded_run_publisher" output="screen"
+          launch-prefix="bash -c 'sleep 5; exec /usr/bin/python3 $0 $@'">
+      <param name="run_dir"          value="$(arg recorded_run_dir)"/>
+      <param name="marker_frame_id" value="map"/>
+      <param name="roller_start_x"  value="-0.08"/>
+      <param name="roller_start_y"  value="0.00"/>
+      <param name="roller_start_z"  value="0.047"/>
+      <param name="replay_mode"     value="$(arg replay_mode)"/>
+      <param name="time_delay_s"    value="$(arg time_delay_s)"/>
+      <param name="playback_duration_s" value="$(arg playback_duration_s)"/>
     </node>
   </group>
 
@@ -212,12 +241,15 @@
        Pass fullscreen:=true on the roslaunch command line for true fullscreen
        at startup (or press F11 inside the window to toggle, Esc to exit). -->
   <arg name="fullscreen" default="true"/>
+  <!-- If true, unified_gui writes camera_view.rviz on exit; default false (no save). -->
+  <arg name="save_rviz_view_on_close" default="false"/>
   <!-- Post-inspection uses expected_spacing_mm and spacing_tolerance_mm (declared near top). -->
   <node name="unified_gui" pkg="rbts_dv_ros_accumulation" type="unified_gui.py" output="screen"
         launch-prefix="bash -c 'sleep 1; exec /usr/bin/python3 $0 $@'">
     <param name="rviz_config" value="$(find flap_roller_viz)/launch/config.rviz"/>
     <param name="logo_dir" value="$(find flap_roller_viz)/../images"/>
     <param name="fullscreen" value="$(arg fullscreen)"/>
+    <param name="save_rviz_view_on_close" value="$(arg save_rviz_view_on_close)"/>
     <param name="expected_spacing_mm" value="$(arg expected_spacing_mm)"/>
     <param name="spacing_tolerance_mm" value="$(arg spacing_tolerance_mm)"/>
   </node>

@@ -1,0 +1,2 @@
+roslaunch flap_roller_viz visualize.launch replay_recorded_run:=true recorded_run_dir:=/home/aric/rbts_recorded_runs/20260501_184117 serial_port:="/dev/ttyACM0"
+

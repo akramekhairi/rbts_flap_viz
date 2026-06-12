@@ -46,7 +46,7 @@ Data flow:
 ## Prerequisites
 
 - **OS**: Ubuntu 20.04
-- **ROS**: ROS Noetic ([installation guide](http://wiki.ros.org/noetic/Installation/Ubuntu))
+- **ROS**: ROS Noetic must already be installed ([installation guide](http://wiki.ros.org/noetic/Installation/Ubuntu))
 - **dv-processing** library (≥ 2.0.0) from iniVation (Note: requires GCC ≥ 13)
 - **Python 3** with PyQt5 and OpenCV
 
@@ -54,7 +54,9 @@ Data flow:
 
 ## Installation
 
-We provide an automated setup script that installs all required dependencies (ROS, dv-processing 2.x, GCC 13), clones the upstream `dv-ros` dependency, configures it to ignore unused modules, and builds the workspace safely without Anaconda interference.
+We provide an automated setup script that installs the supporting dependencies (`dv-processing` 2.x, GCC 13, Python/ROS helper packages) and builds the workspace safely without Anaconda interference. ROS Noetic itself is assumed to already be installed.
+
+The required `dv_ros_msgs`, `dv_ros_messaging`, and `dv_ros_capture` packages are vendored in this repository, so you do not need a separate `~/dv_ws` workspace.
 
 ```bash
 # 1. Clone this repository into an empty directory
@@ -70,11 +72,9 @@ cd rbts_flap_viz
 source ~/handheld_rbts_ws/devel/setup.bash
 ```
 
-*(You can also optionally add `source ~/handheld_rbts_ws/devel/setup.bash` to your `~/.bashrc`)*
-
 Add this to your `~/.bashrc` for convenience:
 ```bash
-echo "source ~/catkin_ws/devel/setup.bash" >> ~/.bashrc
+echo "source ~/handheld_rbts_ws/devel/setup.bash" >> ~/.bashrc
 ```
 
 ---
@@ -121,6 +121,22 @@ For a fuller debug bag, use `bag_mode:=debug`; it also records
 `/hole_detector/debug/binary`. Bags are recorded without compression to avoid
 CPU spikes on the Surface Pro 7. Optional splitting is available with
 `bag_split_size_mb:=1024`.
+
+Evaluate wavelet-denoised Hough circle detection offline from a debug bag:
+```bash
+pip install PyWavelets
+
+python3 $(rospack find rbts_dv_ros_accumulation)/scripts/wavelet_circle_eval.py \
+  --bag $HOME/rbts_bags/monday_baseline_2026-04-27-17-45-00.bag \
+  --image-topic /motion_compensator/image \
+  --preset balanced \
+  --out $HOME/wavelet_eval_out \
+  --video
+```
+
+The evaluator compares the current Hough preprocessing path with a single-level
+Haar wavelet denoise path, writes montage frames/video, and saves consistency
+metrics in `summary.json`.
 
 Replay a bag while re-running motion compensation, detection, and the unified
 GUI:
@@ -181,11 +197,18 @@ Event processing nodes from the [dv-ros](https://gitlab.com/inivation/dv/dv-ros)
 - `motion_compensator` (C++) — motion-compensates events using velocity data and the `dv-processing` library
 - `hole_detector_gui.py` — PyQt5 GUI for real-time hole detection, tracking, and RViz marker publishing
 
+### `dv-ros`
+Vendored upstream [dv-ros](https://gitlab.com/inivation/dv/dv-ros) packages required by this workspace:
+- `dv_ros_msgs` — event camera ROS message definitions
+- `dv_ros_messaging` — converters between `dv-processing` types and ROS messages
+- `dv_ros_capture` — event camera capture node, including the local callback lifetime fix used by this workflow
+
 ---
 
 ## Troubleshooting
 
-- **Build error: `dv_ros_msgs` not found** — Make sure you cloned the upstream [dv-ros](https://gitlab.com/inivation/dv/dv-ros) repo into the same workspace (`~/catkin_ws/src/`).
+- **Build error: duplicate `dv_ros_*` packages** — Re-run `./setup_workspace.sh`; it adds `CATKIN_IGNORE` files to any stale sibling `~/handheld_rbts_ws/src/dv-ros` clone so catkin uses the vendored packages in this repository.
+- **Build error: `dv_ros_msgs` not found** — Make sure the vendored `dv-ros/dv_ros_msgs`, `dv-ros/dv_ros_messaging`, and `dv-ros/dv_ros_capture` directories are present in this repository.
 - **Build error: `dv-processing` not found** — Install the `dv-processing` library (step 2 above).
 - **RViz shows no models** — Ensure `robot_state_publisher` is installed: `sudo apt install ros-noetic-robot-state-publisher`
 - **GUI doesn't open** — Ensure PyQt5 is installed: `sudo apt install python3-pyqt5`
@@ -195,6 +218,7 @@ Event processing nodes from the [dv-ros](https://gitlab.com/inivation/dv/dv-ros)
 
 ## License
 
+- `dv_ros_msgs`, `dv_ros_messaging`, `dv_ros_capture`: Apache 2.0 (iniVation)
 - `rbts_dv_ros_accumulation`: Apache 2.0 (iniVation)
 - `wing_flap`, `roller_handheld`: BSD
 - `flap_roller_viz`: MIT

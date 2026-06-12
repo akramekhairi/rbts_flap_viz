@@ -77,6 +77,143 @@ struct StampedValue {
     double value;
 };
 
+constexpr float kHaarScale = 0.70710678118f;
+
+static float softThreshold(float value, float threshold) {
+    if (threshold <= 0.0f) {
+        return value;
+    }
+    const float abs_v = std::fabs(value);
+    if (abs_v <= threshold) {
+        return 0.0f;
+    }
+    return (value > 0.0f ? 1.0f : -1.0f) * (abs_v - threshold);
+}
+
+static cv::Mat normalizeToUnit(const cv::Mat &gray_u8) {
+    cv::Mat f32;
+    gray_u8.convertTo(f32, CV_32F);
+    double min_val = 0.0;
+    double max_val = 0.0;
+    cv::minMaxLoc(f32, &min_val, &max_val);
+    if (max_val <= min_val) {
+        return cv::Mat::zeros(f32.size(), CV_32F);
+    }
+    return (f32 - static_cast<float>(min_val)) /
+           static_cast<float>(max_val - min_val);
+}
+
+static cv::Mat padToEvenFloat(const cv::Mat &src) {
+    const int pad_bottom = src.rows % 2;
+    const int pad_right = src.cols % 2;
+    if (pad_bottom == 0 && pad_right == 0) {
+        return src;
+    }
+    cv::Mat padded;
+    cv::copyMakeBorder(src, padded, 0, pad_bottom, 0, pad_right, cv::BORDER_REPLICATE);
+    return padded;
+}
+
+static void haarRowsForward(const cv::Mat &src, cv::Mat &dst) {
+    const int rows = src.rows;
+    const int cols = src.cols;
+    const int half = cols / 2;
+    dst.create(rows, cols, CV_32F);
+    for (int y = 0; y < rows; ++y) {
+        const float *in = src.ptr<float>(y);
+        float *out = dst.ptr<float>(y);
+        for (int x = 0; x < half; ++x) {
+            const float a = in[2 * x];
+            const float b = in[2 * x + 1];
+            out[x] = (a + b) * kHaarScale;
+            out[half + x] = (a - b) * kHaarScale;
+        }
+    }
+}
+
+static void haarColsForward(const cv::Mat &src, cv::Mat &ll, cv::Mat &lh,
+                            cv::Mat &hl, cv::Mat &hh) {
+    const int half_r = src.rows / 2;
+    const int half_c = src.cols / 2;
+    ll.create(half_r, half_c, CV_32F);
+    lh.create(half_r, half_c, CV_32F);
+    hl.create(half_r, half_c, CV_32F);
+    hh.create(half_r, half_c, CV_32F);
+    for (int x = 0; x < half_c; ++x) {
+        for (int y = 0; y < half_r; ++y) {
+            float a = src.at<float>(2 * y, x);
+            float b = src.at<float>(2 * y + 1, x);
+            ll.at<float>(y, x) = (a + b) * kHaarScale;
+            lh.at<float>(y, x) = (a - b) * kHaarScale;
+
+            a = src.at<float>(2 * y, half_c + x);
+            b = src.at<float>(2 * y + 1, half_c + x);
+            hl.at<float>(y, x) = (a + b) * kHaarScale;
+            hh.at<float>(y, x) = (a - b) * kHaarScale;
+        }
+    }
+}
+
+static cv::Mat haarIdwt2(const cv::Mat &ll, const cv::Mat &lh,
+                         const cv::Mat &hl, const cv::Mat &hh) {
+    const int half_r = ll.rows;
+    const int half_c = ll.cols;
+    const int rows = half_r * 2;
+    const int cols = half_c * 2;
+    cv::Mat l_cols(rows, half_c, CV_32F);
+    cv::Mat h_cols(rows, half_c, CV_32F);
+    for (int x = 0; x < half_c; ++x) {
+        for (int y = 0; y < half_r; ++y) {
+            float low = ll.at<float>(y, x);
+            float high = lh.at<float>(y, x);
+            l_cols.at<float>(2 * y, x) = (low + high) * kHaarScale;
+            l_cols.at<float>(2 * y + 1, x) = (low - high) * kHaarScale;
+
+            low = hl.at<float>(y, x);
+            high = hh.at<float>(y, x);
+            h_cols.at<float>(2 * y, x) = (low + high) * kHaarScale;
+            h_cols.at<float>(2 * y + 1, x) = (low - high) * kHaarScale;
+        }
+    }
+
+    cv::Mat out(rows, cols, CV_32F);
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < half_c; ++x) {
+            const float low = l_cols.at<float>(y, x);
+            const float high = h_cols.at<float>(y, x);
+            out.at<float>(y, 2 * x) = (low + high) * kHaarScale;
+            out.at<float>(y, 2 * x + 1) = (low - high) * kHaarScale;
+        }
+    }
+    return out;
+}
+
+static float medianAbsMad(const cv::Mat &band) {
+    std::vector<float> vals;
+    vals.reserve(static_cast<size_t>(band.total()));
+    for (int y = 0; y < band.rows; ++y) {
+        const float *row = band.ptr<float>(y);
+        for (int x = 0; x < band.cols; ++x) {
+            vals.push_back(std::fabs(row[x]));
+        }
+    }
+    if (vals.empty()) {
+        return 0.0f;
+    }
+    const size_t mid = vals.size() / 2;
+    std::nth_element(vals.begin(), vals.begin() + static_cast<std::ptrdiff_t>(mid), vals.end());
+    return vals[mid] / 0.6745f;
+}
+
+static void softThresholdMat(cv::Mat &band, float threshold) {
+    for (int y = 0; y < band.rows; ++y) {
+        float *row = band.ptr<float>(y);
+        for (int x = 0; x < band.cols; ++x) {
+            row[x] = softThreshold(row[x], threshold);
+        }
+    }
+}
+
 struct DetectionParams {
     double scale_mm_per_px = 0.0422;
     /// Temporal consistency only: a history sample "matches" the candidate if its
@@ -114,6 +251,10 @@ struct DetectionParams {
     bool morph_close_enable = true;
     int morph_close_kernel = 3;
 
+    bool wavelet_enable = true;
+    double wavelet_low_energy_frac = 0.45;
+    double wavelet_threshold_scale = 1.0;
+
     int median_blur_ksize = 1;
     std::string detector_mode = "hough_preproc"; // hough_preproc | hough_raw | contour
     bool publish_annotated = true;
@@ -137,6 +278,57 @@ struct DetectionParams {
     double roller_start_z_m = 0.26;
     std::string marker_frame_id = "map";
 };
+
+static cv::Mat preprocessRoiWaveletHaar(const cv::Mat &roi_u8,
+                                        const DetectionParams &params) {
+    cv::Mat unit = normalizeToUnit(roi_u8);
+    if (params.wavelet_low_energy_frac > 0.0) {
+        for (int y = 0; y < unit.rows; ++y) {
+            float *row = unit.ptr<float>(y);
+            for (int x = 0; x < unit.cols; ++x) {
+                if (row[x] < static_cast<float>(params.wavelet_low_energy_frac)) {
+                    row[x] = 0.0f;
+                }
+            }
+        }
+    }
+
+    const int orig_rows = unit.rows;
+    const int orig_cols = unit.cols;
+    unit = padToEvenFloat(unit);
+    if (unit.rows < 2 || unit.cols < 2) {
+        cv::Mat out;
+        unit.convertTo(out, CV_8U, 255.0);
+        return out;
+    }
+
+    cv::Mat row_tmp;
+    haarRowsForward(unit, row_tmp);
+    cv::Mat ll;
+    cv::Mat lh;
+    cv::Mat hl;
+    cv::Mat hh;
+    haarColsForward(row_tmp, ll, lh, hl, hh);
+
+    const float sigma = medianAbsMad(hh);
+    const float threshold = static_cast<float>(
+        params.wavelet_threshold_scale * static_cast<double>(sigma) *
+        std::sqrt(2.0 * std::log(static_cast<double>(
+            std::max(unit.total(), static_cast<size_t>(2))))));
+    if (threshold > 0.0f) {
+        softThresholdMat(lh, threshold);
+        softThresholdMat(hl, threshold);
+        softThresholdMat(hh, threshold);
+    }
+
+    cv::Mat reconstructed = haarIdwt2(ll, lh, hl, hh);
+    reconstructed = reconstructed(cv::Rect(0, 0, orig_cols, orig_rows)).clone();
+    cv::Mat clipped;
+    cv::max(reconstructed, 0.0f, reconstructed);
+    cv::min(reconstructed, 1.0f, reconstructed);
+    reconstructed.convertTo(clipped, CV_8U, 255.0);
+    return clipped;
+}
 
 class HoleDetectorNode {
 public:
@@ -182,9 +374,13 @@ public:
             boost::bind(&HoleDetectorNode::reconfigureCallback, this, _1, _2);
         dyn_server_->setCallback(cb);
 
-        ROS_INFO("hole_detector ready: mode=%s threshold=%s thresh=%d radius=[%d,%d] roi=[%d,%d] center=%d "
+        ROS_INFO("hole_detector ready: mode=%s wavelet=%s low_energy=%.2f thresh_scale=%.2f "
+                 "threshold=%s thresh=%d radius=[%d,%d] roi=[%d,%d] center=%d "
                  "hough(dp=%.2f minDist=%.1f p1=%d p2=%d) offset_sign=%.1f min_vel=%.2fmmps hist=%.1fs",
                  params_.detector_mode.c_str(),
+                 params_.wavelet_enable ? "on" : "off",
+                 params_.wavelet_low_energy_frac,
+                 params_.wavelet_threshold_scale,
                  params_.threshold_mode.c_str(),
                  params_.threshold_value,
                  params_.min_radius_px, params_.max_radius_px,
@@ -238,6 +434,8 @@ private:
         p.dup_x_window_mm = std::max(0.0, p.dup_x_window_mm);
         p.reject_edge_margin_px = std::max(0, p.reject_edge_margin_px);
         p.expected_hole_spacing_mm = std::max(0.1, p.expected_hole_spacing_mm);
+        p.wavelet_low_energy_frac = std::clamp(p.wavelet_low_energy_frac, 0.0, 1.0);
+        p.wavelet_threshold_scale = std::max(0.0, p.wavelet_threshold_scale);
         if (!validDetectorMode(p.detector_mode)) {
             p.detector_mode = "hough_preproc";
         }
@@ -283,6 +481,11 @@ private:
         pnh_.param("morph_open_kernel", params_.morph_open_kernel, params_.morph_open_kernel);
         pnh_.param("morph_close_enable", params_.morph_close_enable, params_.morph_close_enable);
         pnh_.param("morph_close_kernel", params_.morph_close_kernel, params_.morph_close_kernel);
+        pnh_.param("wavelet_enable", params_.wavelet_enable, params_.wavelet_enable);
+        pnh_.param("wavelet_low_energy_frac", params_.wavelet_low_energy_frac,
+                   params_.wavelet_low_energy_frac);
+        pnh_.param("wavelet_threshold_scale", params_.wavelet_threshold_scale,
+                   params_.wavelet_threshold_scale);
         pnh_.param<std::string>("detector_mode", params_.detector_mode, params_.detector_mode);
         if (!pnh_.hasParam("detector_mode")) {
             bool legacy_use_hough = true;
@@ -354,6 +557,9 @@ private:
         updated.morph_open_kernel = config.morph_open_kernel;
         updated.morph_close_enable = config.morph_close_enable;
         updated.morph_close_kernel = config.morph_close_kernel;
+        updated.wavelet_enable = config.wavelet_enable;
+        updated.wavelet_low_energy_frac = config.wavelet_low_energy_frac;
+        updated.wavelet_threshold_scale = config.wavelet_threshold_scale;
         updated.detector_mode = config.detector_mode;
         updated.publish_debug_preprocessed = config.publish_debug_preprocessed;
         updated.publish_debug_binary = config.publish_debug_binary;
@@ -528,6 +734,17 @@ private:
         }
 
         cv::Mat work = gray(roi).clone();
+        if (params.wavelet_enable) {
+            cv::Mat cleaned = preprocessRoiWaveletHaar(work, params);
+            if (params.publish_debug_preprocessed) {
+                publishDebugMono(cleaned, header, debug_preprocessed_pub_);
+            }
+            if (params.publish_debug_binary) {
+                publishDebugMono(cleaned, header, debug_binary_pub_);
+            }
+            return cleaned;
+        }
+
         if (params.bilateral_enable) {
             cv::Mat filtered;
             cv::bilateralFilter(work, filtered, params.bilateral_d,

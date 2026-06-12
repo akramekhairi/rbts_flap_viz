@@ -7,17 +7,25 @@ echo "================================================="
 
 # Detect workspace root (assuming script runs from inside src/rbts_flap_viz)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-WS_DIR="$(dirname $(dirname "$SCRIPT_DIR"))"
+WS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+ROS_SETUP="/opt/ros/noetic/setup.bash"
 
 echo "Detected workspace root: $WS_DIR"
 
+if [ ! -f "$ROS_SETUP" ]; then
+    echo ""
+    echo "ERROR: ROS Noetic is not installed or $ROS_SETUP is missing."
+    echo "Install ROS Noetic first: http://wiki.ros.org/noetic/Installation/Ubuntu"
+    exit 1
+fi
+
 echo ""
-echo "[1/5] Installing System Dependencies (ROS, Python, GCC-13)..."
+echo "[1/5] Installing System Dependencies (Python, ROS helpers, GCC-13)..."
 sudo apt update
-sudo apt install -y ros-noetic-desktop-full \
+sudo apt install -y \
     ros-noetic-robot-state-publisher ros-noetic-tf2-ros ros-noetic-rviz \
     ros-noetic-cv-bridge ros-noetic-image-transport ros-noetic-dynamic-reconfigure ros-noetic-visualization-msgs \
-    ros-noetic-rqt-reconfigure python3-pyqt5 python3-opencv python3-pip python3-rospkg python3-rospy python3-serial \
+    ros-noetic-rqt-reconfigure python3-pyqt5 python3-opencv python3-pip python3-rosdep python3-rospkg python3-rospy python3-serial \
     software-properties-common
 
 # Add repository for GCC 13 needed by modern dv-processing
@@ -33,27 +41,31 @@ sudo apt update
 sudo apt install -y dv-processing
 
 echo ""
-echo "[3/5] Setting up Repository Dependencies..."
-cd "$WS_DIR/src"
-
-if [ ! -d "dv-ros" ]; then
-    echo "Cloning upstream dv-ros repository..."
-    git clone https://gitlab.com/inivation/dv/dv-ros.git
+echo "[3/5] Preparing Vendored dv-ros Packages..."
+STALE_DV_ROS_DIR="$WS_DIR/src/dv-ros"
+if [ -d "$STALE_DV_ROS_DIR" ]; then
+    echo "Found sibling dv-ros clone at $STALE_DV_ROS_DIR."
+    echo "Adding CATKIN_IGNORE files there to avoid duplicate package names."
+    for pkg_dir in "$STALE_DV_ROS_DIR"/*; do
+        if [ -f "$pkg_dir/package.xml" ]; then
+            touch "$pkg_dir/CATKIN_IGNORE"
+        fi
+    done
 else
-    echo "dv-ros already exists, skipping clone."
+    echo "Using vendored dv-ros packages from $SCRIPT_DIR/dv-ros."
 fi
 
-echo "Ignoring conflicting dv-ros modules..."
-for pkg in dv_ros_aedat4 dv_ros_imu_bias dv_ros_tracker dv_ros_visualization dv_ros_runtime_modules dv_ros_accumulation; do
-    if [ -d "dv-ros/$pkg" ]; then
-        touch "dv-ros/$pkg/CATKIN_IGNORE"
+for pkg in dv_ros_msgs dv_ros_messaging dv_ros_capture; do
+    if [ ! -f "$SCRIPT_DIR/dv-ros/$pkg/package.xml" ]; then
+        echo "ERROR: Missing vendored package $SCRIPT_DIR/dv-ros/$pkg."
+        exit 1
     fi
 done
 
 echo ""
 echo "[4/5] Resolving ROS package dependencies with rosdep..."
 cd "$WS_DIR"
-source /opt/ros/noetic/setup.bash
+source "$ROS_SETUP"
 sudo rosdep init 2>/dev/null || true
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
@@ -61,7 +73,7 @@ rosdep install --from-paths src --ignore-src -r -y
 echo ""
 echo "[5/5] Building Workspace with GCC-13..."
 cd "$WS_DIR"
-source /opt/ros/noetic/setup.bash
+source "$ROS_SETUP"
 
 # Export GCC-13 to compile cleanly against C++20 dv-processing core
 export CC=gcc-13

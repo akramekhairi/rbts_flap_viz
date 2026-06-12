@@ -20,15 +20,24 @@ Calls services:
   /hole_detector/reset                 std_srvs/Empty
   /encoder_publisher/reset             std_srvs/Empty
   /roller_controller/toggle_markers    std_srvs/SetBool
+
+Parameters (private ~):
+  save_rviz_view_on_close  bool, default false — if true, writes camera_view.rviz
+      next to the base config on GUI exit; if false, exit does not overwrite it.
+      An existing camera_view.rviz is still loaded on startup when present.
 """
 
+import json
 import os
 import sys
+import threading
 from copy import deepcopy
+from datetime import datetime
 
 import numpy as np
 import rospkg
 import rospy
+import cv2
 from cv_bridge import CvBridge
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
@@ -45,6 +54,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -52,6 +62,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtGui import QColor
+from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import Image
 from std_msgs.msg import ColorRGBA
 from std_srvs.srv import Empty, SetBool
@@ -304,65 +315,32 @@ def _resolve_logo_dir():
 
 
 
-def _disable_rviz_displays_for_marker_topics(frame, marker_topics):
-    """Turn off Marker displays whose Marker Topic matches one of ``marker_topics``.
-
-    The saved RViz view usually already listens to ``LIVE_HOLE_MARKERS_TOPIC``.
-    Post-inspection recoloured markers publish on ``INSPECTION_MARKERS_TOPIC``;
-    leaving the live display enabled draws black cylinders over the reds.
+def _set_rviz_displays_enabled(frame, name_substr, enabled):
+    """Safely toggle RViz displays whose name contains `name_substr`.
+    
+    Avoids `subProp()` which prints C++ errors and causes segfaults.
     """
-    if not marker_topics:
-        return
-
-    def norm_topic(s):
-        return (s or "").strip().replace(" ", "")
-
-    want = {norm_topic(t) for t in marker_topics}
-
     try:
         root = frame.getManager().getRootDisplayGroup()
     except Exception as exc:
         rospy.logwarn("unified_gui: RViz root display group: %s", exc)
         return
 
-    def visit(prop):
+    name_substr = name_substr.lower()
+    for i in range(root.numChildren()):
+        prop = root.childAtUnchecked(i)
         if prop is None:
-            return
-        topic_prop = None
+            continue
         try:
-            topic_prop = prop.subProp("Marker Topic")
+            name = prop.getName()
+            if name_substr in name.lower():
+                prop.setEnabled(enabled)
+                rospy.loginfo(
+                    "unified_gui: %s RViz display '%s'", 
+                    "Enabled" if enabled else "Disabled", name
+                )
         except Exception:
             pass
-        if topic_prop is not None:
-            topic_str = ""
-            try:
-                val = topic_prop.getValue()
-                if hasattr(val, "value"):
-                    topic_str = str(val.value())
-                else:
-                    topic_str = str(val)
-            except Exception:
-                topic_str = ""
-            n = norm_topic(topic_str)
-            for t in want:
-                if n == t:
-                    try:
-                        prop.setEnabled(False)
-                    except Exception:
-                        pass
-                    rospy.loginfo(
-                        "unified_gui: disabled RViz Marker display (%s)",
-                        topic_str,
-                    )
-                    break
-        try:
-            n_children = prop.numChildren()
-        except Exception:
-            return
-        for i in range(n_children):
-            visit(prop.childAtUnchecked(i))
-
-    visit(root)
 
 
 def _build_rviz_frame(rviz_config_path,
@@ -404,7 +382,7 @@ def _build_rviz_frame(rviz_config_path,
 
     if include_inspection_overlay:
         if mute_live_marker_topics:
-            _disable_rviz_displays_for_marker_topics(frame, mute_live_marker_topics)
+            _set_rviz_displays_enabled(frame, "hole markers", False)
         try:
             display = frame.getManager().createDisplay(
                 "rviz/MarkerArray", "Inspection Analysis Markers", True
@@ -447,6 +425,20 @@ class ROSThread(QThread):
         self.markers_visible = False
         self.frames_received = 0
 
+        # --- Run recording state ------------------------------------------
+        self._rec_lock = threading.Lock()
+        # Encoder tracking (same zeroing as synthetic_marker_publisher).
+        self._rec_encoder_mm = None
+        self._rec_encoder_offset_m = None
+        self._rec_last_raw_m = None
+        # Continuous frame capture keyed to encoder travel.
+        self._rec_frames = []               # list of (encoder_mm, jpeg_bytes)
+        self._rec_last_frame_mm = None
+        self._rec_frame_interval_mm = 1.0   # save a frame every 1 mm
+        # Per-hole snapshot: the annotated frame visible when hole was detected.
+        self._rec_hole_images = {}           # hole_id -> jpeg_bytes
+        self._rec_latest_cv = None           # last annotated frame (raw np)
+
     def run(self):
         rospy.Subscriber(
             "/motion_compensator/annotated_image",
@@ -483,6 +475,14 @@ class ROSThread(QThread):
             queue_size=1,
             tcp_nodelay=True,
         )
+        # Encoder position for run recording (frame ↔ encoder association).
+        rospy.Subscriber(
+            "/roller/position_stamped",
+            PointStamped,
+            self._rec_position_callback,
+            queue_size=50,
+            tcp_nodelay=True,
+        )
         rospy.Timer(rospy.Duration(2.0), self._heartbeat)
         rospy.loginfo(
             "unified_gui: subscribed to image, hole event, and marker topics"
@@ -513,6 +513,20 @@ class ROSThread(QThread):
         self.frames_received += 1
         self.new_frame_signal.emit(cv_image)
 
+        # --- Run recording: save frame at regular encoder intervals -------
+        self._rec_latest_cv = cv_image
+        enc = self._rec_encoder_mm
+        if enc is not None:
+            with self._rec_lock:
+                if (self._rec_last_frame_mm is None or
+                        abs(enc - self._rec_last_frame_mm) >= self._rec_frame_interval_mm):
+                    ok, buf = cv2.imencode(
+                        ".jpg", cv_image,
+                        [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok:
+                        self._rec_frames.append((enc, buf.tobytes()))
+                        self._rec_last_frame_mm = enc
+
     def hole_event_callback(self, msg):
         self.new_hole_signal.emit(
             int(msg.id),
@@ -521,6 +535,14 @@ class ROSThread(QThread):
             float(getattr(msg, "rel_x_mm", 0.0)),
             float(msg.radius_mm),
         )
+        # Snapshot the annotated frame at detection time.
+        frame = self._rec_latest_cv
+        if frame is not None:
+            ok, buf = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if ok:
+                with self._rec_lock:
+                    self._rec_hole_images[int(msg.id)] = buf.tobytes()
 
     def marker_callback(self, msg):
         self.marker_snapshot_signal.emit(msg)
@@ -528,8 +550,41 @@ class ROSThread(QThread):
     def synthetic_plan_callback(self, msg):
         self.synthetic_plan_signal.emit(msg)
 
+    # --- Run recording helpers -------------------------------------------
+
+    def _rec_position_callback(self, msg):
+        """Track encoder position for frame ↔ encoder association."""
+        raw_m = msg.point.x
+        if self._rec_last_raw_m is None:
+            self._rec_last_raw_m = raw_m
+            return
+        if self._rec_encoder_offset_m is None:
+            if raw_m != self._rec_last_raw_m:
+                self._rec_encoder_offset_m = raw_m
+                rospy.loginfo("unified_gui rec: encoder zeroed at %.6f m", raw_m)
+        self._rec_last_raw_m = raw_m
+        if self._rec_encoder_offset_m is None:
+            return
+        self._rec_encoder_mm = (raw_m - self._rec_encoder_offset_m) * 1000.0
+
+    def clear_recording(self):
+        """Wipe all recorded frames and hole images."""
+        with self._rec_lock:
+            self._rec_frames.clear()
+            self._rec_hole_images.clear()
+            self._rec_last_frame_mm = None
+            self._rec_encoder_mm = None
+            self._rec_encoder_offset_m = None
+            self._rec_last_raw_m = None
+
+    def get_recording_snapshot(self):
+        """Return a thread-safe copy of (frames, hole_images)."""
+        with self._rec_lock:
+            return list(self._rec_frames), dict(self._rec_hole_images)
+
     def reset_state(self):
         self.clear_table_signal.emit()
+        self.clear_recording()
         try:
             rospy.ServiceProxy("/hole_detector/reset", Empty)()
             rospy.loginfo("Reset hole_detector.")
@@ -545,6 +600,10 @@ class ROSThread(QThread):
             rospy.loginfo("Reset synthetic_marker_publisher.")
         except rospy.ServiceException as exc:
             rospy.logwarn("Failed to reset synthetic_marker_publisher: %s" % exc)
+        try:
+            rospy.ServiceProxy("/recorded_run_publisher/reset", Empty)()
+        except rospy.ServiceException:
+            pass  # node may not be running
 
     def toggle_markers(self):
         self.set_roller_visible(not self.markers_visible)
@@ -563,265 +622,15 @@ class ROSThread(QThread):
             rospy.logwarn("Failed to call toggle service: %s" % exc)
 
 
-class PostInspectionWindow(QWidget):
-    """Post-inspection analysis window.
-
-    Read-only review surface: same header band (logos + title) as the live
-    GUI, an embedded RViz panel where every detected/planned hole is
-    redrawn black (in-spec) or red (out-of-spec) via a dedicated marker
-    array, and a table listing each hole with its measured vs expected
-    relative distance. Out-of-spec rows are tinted red. No control buttons
-    -- analysis is purely a read-only view.
-
-    Closing this window invokes ``on_close_callback`` (if provided) and
-    triggers shutdown of the parent GUI to keep the workflow simple.
-    """
-
-    def __init__(self,
-                 rviz_config_path,
-                 saved_view_path,
-                 logo_dir,
-                 rows,
-                 start_fullscreen=True,
-                 on_close_callback=None):
-        super().__init__()
-        self._on_close_callback = on_close_callback
-        self.logo_dir = logo_dir
-        self.start_fullscreen = bool(start_fullscreen)
-        self._rows = rows
-
-        self.setObjectName("root")
-        self.setWindowTitle("Handheld Roller - Post-Inspection Analysis")
-        self.setStyleSheet(STYLESHEET + POST_INSPECTION_EXTRA_STYLESHEET)
-        self.resize(1600, 950)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        root.addWidget(self._build_header())
-
-        body_wrap = QWidget()
-        body_wrap_layout = QHBoxLayout(body_wrap)
-        body_wrap_layout.setContentsMargins(12, 12, 12, 12)
-        body_wrap_layout.setSpacing(0)
-
-        body = QSplitter(Qt.Horizontal)
-        body.setHandleWidth(6)
-        body.addWidget(self._build_rviz_panel(rviz_config_path, saved_view_path))
-        body.addWidget(self._build_table_panel(rows))
-        body.setStretchFactor(0, 55)
-        body.setStretchFactor(1, 45)
-        body.setSizes([900, 700])
-        body_wrap_layout.addWidget(body)
-        root.addWidget(body_wrap, 1)
-
-        self._install_shortcuts()
-
-    # ------------------------------------------------------------------ UI
-
-    def _build_header(self):
-        header = QFrame()
-        header.setObjectName("headerBar")
-        header.setFixedHeight(HEADER_HEIGHT_PX)
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(20, 10, 20, 10)
-        layout.setSpacing(24)
-
-        for fname in (
-            "aricuae_logo_transparent.png",
-            "ku_transparent.png",
-        ):
-            self._add_logo(layout, fname, LOGO_HEIGHT_PX)
-
-        title_box = QVBoxLayout()
-        title_box.setSpacing(2)
-        title = QLabel("Handheld Roller")
-        title.setObjectName("titleLabel")
-        title.setAlignment(Qt.AlignCenter)
-        subtitle = QLabel("Post-Inspection Analysis \u2022 Hole Spec Review")
-        subtitle.setObjectName("subtitleLabel")
-        subtitle.setAlignment(Qt.AlignCenter)
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        title_wrap = QWidget()
-        title_wrap.setLayout(title_box)
-        layout.addWidget(title_wrap, 1)
-
-        self._add_logo(layout, "Strata-Logo-a-mubadala-company.png", LOGO_HEIGHT_PX)
-        return header
-
-    def _add_logo(self, layout, fname, height):
-        if not self.logo_dir:
-            return
-        path = os.path.join(self.logo_dir, fname)
-        if not os.path.isfile(path):
-            rospy.logwarn("PostInspectionWindow: logo not found: %s" % path)
-            return
-        pix = QPixmap(path)
-        if pix.isNull():
-            return
-        pix = pix.scaledToHeight(height, Qt.SmoothTransformation)
-        label = QLabel()
-        label.setPixmap(pix)
-        label.setFixedSize(pix.size())
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label, 0, Qt.AlignVCenter)
-
-    def _build_rviz_panel(self, rviz_config_path, saved_view_path):
-        self.rviz_frame = _build_rviz_frame(
-            rviz_config_path,
-            saved_view_path=saved_view_path,
-            include_inspection_overlay=True,
-            mute_live_marker_topics=[LIVE_HOLE_MARKERS_TOPIC],
-        )
-        wrapper = QFrame()
-        wrapper.setObjectName("rvizCard")
-        wrapper.setStyleSheet(
-            "QFrame#rvizCard {{ background-color: {card};"
-            " border: 1px solid {mid}; border-radius: {r}px; }}".format(
-                card=PALETTE["card"], mid=PALETTE["mid"], r=CARD_RADIUS_PX
-            )
-        )
-        wrap_layout = QVBoxLayout(wrapper)
-        wrap_layout.setContentsMargins(6, 6, 6, 6)
-        wrap_layout.setSpacing(0)
-        wrap_layout.addWidget(self.rviz_frame)
-        self._apply_card_shadow(wrapper)
-        return wrapper
-
-    def _build_table_panel(self, rows):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 0, 0, 0)
-        layout.setSpacing(10)
-
-        group = QGroupBox("Post-Inspection Hole Analysis")
-        inner = QVBoxLayout(group)
-        inner.setContentsMargins(8, 8, 8, 8)
-        inner.setSpacing(8)
-
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "Hole ID",
-                "Relative\nDistance (mm)",
-                "Expected Relative\nDistance (mm)",
-                "Within\nSpec",
-            ]
-        )
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
-        header.setDefaultAlignment(Qt.AlignCenter)
-        header.setMinimumHeight(48)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setMinimumHeight(220)
-        # Touch scroll-nav buttons paired with the table for tablet usage,
-        # mirroring the live GUI's affordances.
-        inner.addWidget(self._wrap_with_scroll_nav(self.table))
-        self._populate_rows(rows)
-        layout.addWidget(group, 1)
-        return container
-
-    def _populate_rows(self, rows):
-        red_bg = QColor(255, 205, 205)
-        for row_data in rows:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            values = [
-                str(row_data["id"]),
-                "%.2f" % row_data["relative_mm"],
-                "%.2f" % row_data["expected_mm"],
-                "Yes" if row_data["within_spec"] else "No",
-            ]
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setTextAlignment(Qt.AlignCenter)
-                if not row_data["within_spec"]:
-                    item.setBackground(red_bg)
-                self.table.setItem(row, col, item)
-
-    def _apply_card_shadow(self, widget):
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(18)
-        shadow.setOffset(0, 2)
-        shadow.setColor(QColor(53, 88, 114, 40))
-        widget.setGraphicsEffect(shadow)
-
-    def _wrap_with_scroll_nav(self, scrollable):
-        """Same touch-friendly up/down scroll buttons used by the live GUI."""
-        container = QWidget()
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
-        row.addWidget(scrollable, 1)
-
-        nav = QWidget()
-        nav_layout = QVBoxLayout(nav)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(4)
-        nav.setFixedWidth(SCROLL_NAV_WIDTH_PX)
-
-        up_btn = QPushButton("\u25B2")
-        down_btn = QPushButton("\u25BC")
-        for btn in (up_btn, down_btn):
-            btn.setObjectName("scrollNavBtn")
-            btn.setFocusPolicy(Qt.NoFocus)
-            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-            btn.setFixedWidth(SCROLL_NAV_WIDTH_PX)
-            btn.setAutoRepeat(True)
-            btn.setAutoRepeatDelay(SCROLL_NAV_REPEAT_DELAY_MS)
-            btn.setAutoRepeatInterval(SCROLL_NAV_REPEAT_MS)
-        nav_layout.addWidget(up_btn, 1)
-        nav_layout.addWidget(down_btn, 1)
-        row.addWidget(nav, 0)
-
-        bar = scrollable.verticalScrollBar()
-        up_btn.clicked.connect(
-            lambda _=False, b=bar: b.setValue(
-                b.value() - SCROLL_NAV_STEP_LINES * max(1, b.singleStep())))
-        down_btn.clicked.connect(
-            lambda _=False, b=bar: b.setValue(
-                b.value() + SCROLL_NAV_STEP_LINES * max(1, b.singleStep())))
-        return container
-
-    # --------------------------------------------------------- shortcuts
-
-    def _install_shortcuts(self):
-        QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
-        QShortcut(QKeySequence("Escape"), self, activated=self._exit_fullscreen)
-
-    def _toggle_fullscreen(self):
-        if self.isFullScreen():
-            self.showNormal()
-        else:
-            self.showFullScreen()
-
-    def _exit_fullscreen(self):
-        if self.isFullScreen():
-            self.showNormal()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if self.start_fullscreen and not self.isFullScreen():
-            # One-shot: fullscreen on first show only.
-            self.start_fullscreen = False
-            self.showFullScreen()
-
-    def closeEvent(self, event):
-        super().closeEvent(event)
-        if callable(self._on_close_callback):
-            self._on_close_callback()
 
 
 class UnifiedGUI(QWidget):
     def __init__(self, rviz_config_path, logo_dir, start_fullscreen=False):
         super().__init__()
         self.rviz_config_path = rviz_config_path
-        # Saved camera view lives alongside the base config so it survives
-        # across sessions. Written on close, read on startup.
+        # Saved camera view lives alongside the base config. Loaded on startup
+        # when the file exists. Written on exit only if ~save_rviz_view_on_close
+        # is true (default false).
         self._saved_view_path = (
             os.path.join(os.path.dirname(rviz_config_path), "camera_view.rviz")
             if rviz_config_path
@@ -829,6 +638,10 @@ class UnifiedGUI(QWidget):
         )
         self.logo_dir = logo_dir
         self.start_fullscreen = start_fullscreen
+        # When false (default), closing the GUI does not write camera_view.rviz.
+        self._save_rviz_view_on_close = bool(
+            rospy.get_param("~save_rviz_view_on_close", False)
+        )
         self._latest_cv_img = None
         # Encoder-absolute X of the first hole in this session; table shows
         # (x - this) so distance is relative to hole #1 after each reset.
@@ -879,7 +692,11 @@ class UnifiedGUI(QWidget):
         body = QSplitter(Qt.Horizontal)
         body.setHandleWidth(6)
         body.addWidget(self._build_rviz_panel())
-        body.addWidget(self._build_right_panel())
+        
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(self._build_right_panel())
+        self.right_stack.addWidget(self._build_analysis_panel())
+        body.addWidget(self.right_stack)
         body.setStretchFactor(0, 55)
         body.setStretchFactor(1, 45)
         # Right pane min ~ image native width + chrome so a clean 1x upscale
@@ -918,7 +735,8 @@ class UnifiedGUI(QWidget):
         title_wrap.setLayout(title_box)
         layout.addWidget(title_wrap, 1)
 
-        # Right-anchored logo.
+        # Right-anchored logos.
+        self._add_logo(layout, "intratomics.png", 96)
         self._add_logo(layout, "Strata-Logo-a-mubadala-company.png", LOGO_HEIGHT_PX)
 
         return header
@@ -951,6 +769,8 @@ class UnifiedGUI(QWidget):
 
     def _save_rviz_view(self):
         """Persist the current RViz state (camera, displays …) to disk."""
+        if not self._save_rviz_view_on_close:
+            return
         if not self._saved_view_path:
             return
         try:
@@ -1103,17 +923,24 @@ class UnifiedGUI(QWidget):
 
     def _build_controls_group(self):
         group = QGroupBox("Controls")
-        layout = QHBoxLayout(group)
-        layout.setContentsMargins(6, 6, 6, 6)
+        outer = QVBoxLayout(group)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(6)
+
+        # --- Row 1 ---
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
         self.toggle_btn = QPushButton("Toggle Roller")
         self.toggle_btn.clicked.connect(self.ros_thread.toggle_markers)
         self.reset_btn = QPushButton("Reset Env / Roller")
         self.reset_btn.clicked.connect(self.ros_thread.reset_state)
-        self.reset_view_btn = QPushButton("Reset View")
-        self.reset_view_btn.setToolTip(
-            "Delete the saved camera view and restore the default RViz layout."
-        )
-        self.reset_view_btn.clicked.connect(self._reset_rviz_view)
+        row1.addWidget(self.toggle_btn)
+        row1.addWidget(self.reset_btn)
+        outer.addLayout(row1)
+
+        # --- Row 2 ---
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
         # Post-inspection analysis: opens a separate full-screen window with
         # spec-coloured holes + relative-distance comparison table.
         self.analysis_btn = QPushButton("Post-Inspection Analysis")
@@ -1122,10 +949,16 @@ class UnifiedGUI(QWidget):
             " relative-distance comparison."
         )
         self.analysis_btn.clicked.connect(self.open_post_inspection_window)
-        layout.addWidget(self.toggle_btn)
-        layout.addWidget(self.reset_btn)
-        layout.addWidget(self.reset_view_btn)
-        layout.addWidget(self.analysis_btn)
+        self.save_run_btn = QPushButton("Save Run")
+        self.save_run_btn.setToolTip(
+            "Save the current detection run (holes + continuous frames) so it"
+            " can be replayed later without the camera."
+        )
+        self.save_run_btn.clicked.connect(self._save_run)
+        row2.addWidget(self.analysis_btn)
+        row2.addWidget(self.save_run_btn)
+        outer.addLayout(row2)
+
         return group
 
     def _reset_rviz_view(self):
@@ -1148,6 +981,7 @@ class UnifiedGUI(QWidget):
         self._first_hole_abs_x_mm = None
         self.table.setRowCount(0)
         self._hole_records = []
+        self.ros_thread.clear_recording()
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
@@ -1329,35 +1163,189 @@ class UnifiedGUI(QWidget):
         except Exception as exc:
             rospy.logwarn("Failed to publish inspection markers: %s" % exc)
 
-    def open_post_inspection_window(self):
-        if self._analysis_window is not None and self._analysis_window.isVisible():
-            self._analysis_window.activateWindow()
-            self._analysis_window.raise_()
-            return
+    def _build_analysis_panel(self):
+        """Build the right-hand panel for Post-Inspection Analysis."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setSpacing(10)
 
+        # Header for the analysis view
+        header_layout = QHBoxLayout()
+        title = QLabel("Post-Inspection Hole Analysis")
+        title.setStyleSheet("font-weight: bold; font-size: 18px;")
+        
+        self.back_btn = QPushButton("\u2190 Back to Live View")
+        self.back_btn.setToolTip("Close analysis and return to the live GUI.")
+        self.back_btn.setStyleSheet("QPushButton { padding: 8px 16px; font-weight: 700; }")
+        self.back_btn.clicked.connect(self.close_post_inspection_window)
+        
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        header_layout.addWidget(self.back_btn)
+        layout.addLayout(header_layout)
+
+        # Table
+        group = QGroupBox("Inspection Results")
+        inner = QVBoxLayout(group)
+        inner.setContentsMargins(8, 8, 8, 8)
+        inner.setSpacing(8)
+
+        self.analysis_table = QTableWidget(0, 4)
+        self.analysis_table.setHorizontalHeaderLabels([
+            "Hole ID", "Relative\nDistance (mm)", "Expected Relative\nDistance (mm)", "Within\nSpec"
+        ])
+        header = self.analysis_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setDefaultAlignment(Qt.AlignCenter)
+        header.setMinimumHeight(48)
+        self.analysis_table.verticalHeader().setVisible(False)
+        self.analysis_table.setAlternatingRowColors(True)
+        self.analysis_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.analysis_table.setMinimumHeight(220)
+        
+        inner.addWidget(self._wrap_with_scroll_nav(self.analysis_table))
+        layout.addWidget(group, 1)
+        return container
+
+    def update_analysis_rows(self, rows):
+        self.analysis_table.setRowCount(0)
+        red_bg = QColor(255, 205, 205)
+        for row_data in rows:
+            row = self.analysis_table.rowCount()
+            self.analysis_table.insertRow(row)
+            values = [
+                str(row_data["id"]),
+                "%.2f" % row_data["relative_mm"],
+                "%.2f" % row_data["expected_mm"],
+                "Yes" if row_data["within_spec"] else "No",
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                if not row_data["within_spec"]:
+                    item.setBackground(red_bg)
+                self.analysis_table.setItem(row, col, item)
+
+    def open_post_inspection_window(self):
         expected_mm = float(rospy.get_param(
             "~expected_spacing_mm", DEFAULT_EXPECTED_SPACING_MM))
         tol_mm = float(rospy.get_param(
             "~spacing_tolerance_mm", DEFAULT_SPACING_TOL_MM))
         rows = self._build_inspection_rows(expected_mm, tol_mm)
 
-        # Hide the live roller before re-using the saved RViz view in the
-        # analysis window so the inspection markers stand out cleanly.
+        # Update analysis table and switch right panel
+        self.update_analysis_rows(rows)
+        self.right_stack.setCurrentIndex(1)
+
+        # Hide live roller, publish inspection markers, and mute live markers in RViz
         self.ros_thread.set_roller_visible(False)
         self._publish_inspection_markers(rows)
+        _set_rviz_displays_enabled(self.rviz_frame, "hole markers", False)
 
-        self._analysis_window = PostInspectionWindow(
-            rviz_config_path=self.rviz_config_path,
-            saved_view_path=self._saved_view_path,
-            logo_dir=self.logo_dir,
-            rows=rows,
-            start_fullscreen=True,
-            on_close_callback=self._on_analysis_closed,
-        )
-        self._analysis_window.show()
+        # Ensure the inspection display exists in RViz
+        if not hasattr(self, '_inspection_display_added'):
+            try:
+                display = self.rviz_frame.getManager().createDisplay(
+                    "rviz/MarkerArray", "Inspection Analysis Markers", True
+                )
+                if display is not None:
+                    display.subProp("Marker Topic").setValue(INSPECTION_MARKERS_TOPIC)
+                    display.subProp("Queue Size").setValue(100)
+                self._inspection_display_added = True
+            except Exception as exc:
+                rospy.logwarn("Failed to add inspection marker RViz display: %s" % exc)
+        
+        # Make sure the inspection display is turned ON (in case we previously closed it)
+        _set_rviz_displays_enabled(self.rviz_frame, "inspection", True)
 
-    def _on_analysis_closed(self):
-        self._analysis_window = None
+    def close_post_inspection_window(self):
+        # Switch right panel back to live view
+        self.right_stack.setCurrentIndex(0)
+        
+        # Wipe inspection markers
+        wipe = MarkerArray()
+        m = Marker()
+        m.action = Marker.DELETEALL
+        wipe.markers.append(m)
+        self.analysis_marker_pub.publish(wipe)
+        
+        # Disable inspection marker display, re-enable live markers
+        _set_rviz_displays_enabled(self.rviz_frame, "inspection", False)
+        _set_rviz_displays_enabled(self.rviz_frame, "hole markers", True)
+
+    # --------------------------------------------------------------- save run
+
+    def _save_run(self):
+        """Write the current detection run to ~/rbts_recorded_runs/<timestamp>."""
+        if not self._hole_records:
+            rospy.logwarn("unified_gui: no holes recorded — nothing to save.")
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = os.path.join(
+            os.path.expanduser("~"), "rbts_recorded_runs", ts)
+        images_dir = os.path.join(run_dir, "images")
+        frames_dir = os.path.join(run_dir, "frames")
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(frames_dir, exist_ok=True)
+
+        rec_frames, rec_hole_imgs = self.ros_thread.get_recording_snapshot()
+
+        # Save per-hole detection snapshots.
+        for hole_id, jpeg_bytes in rec_hole_imgs.items():
+            fname = "hole_%d.jpg" % hole_id
+            with open(os.path.join(images_dir, fname), "wb") as f:
+                f.write(jpeg_bytes)
+
+        # Save continuous frames.
+        frame_entries = []
+        for i, (enc_mm, jpeg_bytes) in enumerate(rec_frames):
+            fname = "frame_%06d.jpg" % i
+            with open(os.path.join(frames_dir, fname), "wb") as f:
+                f.write(jpeg_bytes)
+            frame_entries.append({"encoder_mm": enc_mm, "file": fname})
+
+        # Collect marker placement params from the param server.
+        roller_x = float(rospy.get_param("/hole_detector/roller_start_x", -0.14))
+        roller_y = float(rospy.get_param("/hole_detector/roller_start_y", 0.0))
+        roller_z = float(rospy.get_param("/hole_detector/roller_start_z", 0.0))
+        frame_id = str(rospy.get_param("/hole_detector/marker_frame_id", "map"))
+
+        holes_list = []
+        for rec in self._hole_records:
+            entry = {
+                "id": rec["id"],
+                "abs_x_mm": rec["abs_x_mm"],
+                "radius_mm": rec["radius_mm"],
+                "rel_time_s": rec["rel_time_s"],
+                "rel_x_mm": rec["rel_x_mm"],
+            }
+            img_key = "hole_%d.jpg" % rec["id"]
+            if rec["id"] in rec_hole_imgs:
+                entry["image_file"] = img_key
+            holes_list.append(entry)
+
+        run_data = {
+            "version": 1,
+            "created_at": datetime.now().isoformat(),
+            "marker_params": {
+                "roller_start_x_m": roller_x,
+                "roller_start_y_m": roller_y,
+                "roller_start_z_m": roller_z,
+                "marker_frame_id": frame_id,
+                "marker_thickness_m": 0.003,
+            },
+            "holes": holes_list,
+            "frames": frame_entries,
+        }
+
+        with open(os.path.join(run_dir, "run.json"), "w") as f:
+            json.dump(run_data, f, indent=2)
+
+        rospy.loginfo(
+            "unified_gui: run saved to %s (%d holes, %d frames)",
+            run_dir, len(holes_list), len(frame_entries))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

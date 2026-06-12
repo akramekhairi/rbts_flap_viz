@@ -78,5 +78,7 @@ catkin_install_python(PROGRAMS
   scripts/hole_detector_gui.py
   scripts/unified_gui.py
   scripts/synthetic_marker_publisher.py
+  scripts/recorded_run_publisher.py
+  scripts/wavelet_circle_eval.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
